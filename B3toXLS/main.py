@@ -163,6 +163,7 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 path = r"app/"
 parseFolder = "toParse/"
 
+maybe_mkdir(path)
 maybe_mkdir(path + parseFolder)
 maybe_mkdir(path + parseFolder + f'parsed/')
 
