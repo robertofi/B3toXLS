@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-# requirements = ["streamlit", "pandas", "numpy", 'datetime']
+requirements = ["streamlit", "pandas", "numpy", 'datetime']
 
 setup(
     name="B3toXLS",
