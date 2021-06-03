@@ -83,6 +83,7 @@ def readNotasB3(file=r"G:\My Drive\Econometrics\Corretoras\XP\20_12.pdf"):
       value *= -1 if s3 == 'D' else 1
       return value
 
+    print(df)
     totalCustos = parseStrings(
       df.iloc[np.where(df['Resumo Financeiro'].str.lower().str.contains('total custos') == True)[0]].values)
     liquidoPara = parseStrings(
