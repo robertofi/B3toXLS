@@ -47,6 +47,16 @@ def download_link(object_to_download, download_filename, download_link_text):
 def maybe_mkdir(path):
   if not os.path.isdir(path): os.mkdir(path)
 
+
+def mkNextDir(path, parseFolder):
+  i = 1
+
+  while os.path.isdir(f'{path+parseFolder}_{i}'):
+    i+=1
+  os.mkdir(f'{path+parseFolder}_{i}')
+  return f'{parseFolder}_{i}/'
+
+
 def readNotasB3(file=r"G:\My Drive\Econometrics\Corretoras\XP\20_12.pdf"):
   import tabula
   def parseTopos(topos):
@@ -83,7 +93,6 @@ def readNotasB3(file=r"G:\My Drive\Econometrics\Corretoras\XP\20_12.pdf"):
       value *= -1 if s3 == 'D' else 1
       return value
 
-    print(df)
     totalCustos = parseStrings(
       df.iloc[np.where(df['Resumo Financeiro'].str.lower().str.contains('total custos') == True)[0]].values)
     liquidoPara = parseStrings(
@@ -162,11 +171,11 @@ footer {visibility: hidden;}
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 path = r"app/"
-parseFolder = "toParse/"
+parseFolder = "toParse"
 
 maybe_mkdir(path)
-maybe_mkdir(path + parseFolder)
-maybe_mkdir(path + parseFolder + f'parsed/')
+parseFolder = mkNextDir(path, parseFolder)
+# maybe_mkdir(path + parseFolder + f'parsed/')
 
 st.title('Conversor de Notas de Corretagem')
 st.write('Conversor de Notas de Corretagem para Excel')
@@ -200,6 +209,6 @@ if len(files):
     else:
       message.write('Nada encontrado para converter. '
                    'Verifique se o pdf está no padrão B3')
-
-    for file in files:
-      os.replace(path + parseFolder + f'{file.name}', path + parseFolder + f'parsed/{file.name}')
+    #
+    # for file in files:
+    #   os.replace(path + parseFolder + f'{file.name}', path + parseFolder + f'parsed/{file.name}')
