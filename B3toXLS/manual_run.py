@@ -1,5 +1,5 @@
 import numpy as np
-from datetime import  datetime
+from datetime import  datetime, timedelta
 import pdfplumber
 import pandas as pd
 import os
@@ -9,12 +9,13 @@ from .cfg import NOTAS_MAP, SYMBOLS_MAP
 class read_nota_b3(object):
     def __init__(self):
         self._notas = pd.read_pickle(cfg.FILE_NOTAS) if os.path.isfile(cfg.FILE_NOTAS) else pd.DataFrame()
-        self._operacoes = pd.read_pickle(cfg.FILE_OPER) if os.path.isfile(cfg.FILE_OPER) else pd.DataFrame()
+        self._operacoes = pd.read_pickle(cfg.FILE_OPER) if os.path.isfile(cfg.FILE_OPER) else pd.DataFrame(columns=['nota_id'])
         self._cpf = None
         self._qant = pd.DataFrame([], columns=['Q', 'P']) \
             if not os.path.isfile(cfg.FILE_QANT) else pd.read_csv(cfg.FILE_QANT).set_index('symbol')
-        self._pacum = pd.DataFrame([], columns=['noraml', 'daytrade']) \
+        self._pacum = pd.DataFrame([], columns=['noraml', 'daytrade', 'date']) \
             if not os.path.isfile(cfg.FILE_PACUM) else pd.read_csv(cfg.FILE_PACUM).set_index('cpf')
+        self._pacum['date'] = pd.to_datetime(self._pacum['date'])
 
     def check_updates(self):
         files = os.listdir(cfg.PATH_NOTAS)
@@ -36,7 +37,7 @@ class read_nota_b3(object):
                 os.system(f'mv "{file}" "{file_dest}"')
         else:
             print('Há notas com erros:')
-            print(self._notas[~self._notas['verified']])
+            print(self._notas[self._notas['verified']==False])
 
     def save(self):
         self._notas.to_pickle(cfg.FILE_NOTAS)
@@ -44,7 +45,7 @@ class read_nota_b3(object):
         self._qant.to_csv(cfg.FILE_QANT)
         self._pacum.to_csv(cfg.FILE_PACUM)
 
-    def extract_tables(self, files:list):
+    def extract_tables(self, files:list, skip_before='20221231'):
         def parse_str(col):
             map = NOTAS_MAP[col]
             if isinstance(map, dict):
@@ -61,13 +62,24 @@ class read_nota_b3(object):
             if pos<0: return
             s = text[pos:].split('\n')[0].split(' ')
             try:
-                return sign * pd.to_numeric(s[idx].replace('.', '').replace(',', '.'), errors='coerce') * (
+                return sign * pd.to_numeric(s[idx].replace('.', '').replace(',', '.')) * (
                     -1 if idx_sign and s[idx_sign] == 'D'  else 1)
             except:
+                if 'second_try' in map:
+                    map = map['second_try']
+                    idx = map.get('idx')
+                    idx_sign = map.get('idx_sign')
+                    sign = map.get('sign', 1)
+                    try:
+                        return sign * pd.to_numeric(s[idx].replace('.', '').replace(',', '.')) * (
+                            -1 if idx_sign and s[idx_sign] == 'D' else 1)
+                    except:
+                        pass
                 return np.NaN
-        operacoes = pd.DataFrame()
+        operacoes = pd.DataFrame(columns=['nota_id'])
         notas = pd.DataFrame()
         notas.index.name='nota_id'
+        skip_before = pd.to_datetime(skip_before) if skip_before else None
         for file in files:
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
@@ -75,7 +87,6 @@ class read_nota_b3(object):
                     text = page.extract_text()
                     # print(text)
 
-                    # Para extrair tabelas, você pode fazer
                     tables = page.extract_tables({'intersection_y_tolerance': 21})
 
                     # parse notas
@@ -93,7 +104,6 @@ class read_nota_b3(object):
                         notas.loc[nota_id, ['data','cpf','conta','pagina','file']]=data,cpf,conta,page.page_number, file
                         for col in NOTAS_MAP:
                             notas.at[nota_id, col] = parse_str(col)
-
                         oper = find_operacoes(tables)
                         oper = pd.DataFrame(oper,
                                             columns=['q', 'negociacao', 'c/v', 'tipo_mercado', 'prazo', 'titulo',
@@ -117,33 +127,44 @@ class read_nota_b3(object):
         operacoes['dt'] = operacoes['obs'].apply(lambda x: True if "D" in x else False)
 
         #check values
-        self.verify_parsed_values()
-        self._notas = pd.concat([self._notas, notas]).sort_values(by=['data'])
-        self._operacoes = pd.concat([self._operacoes, operacoes])
+        notas_q = self._notas[~self._notas.index.isin(notas.index)]
+        self._notas = pd.concat([notas_q, notas]).sort_values(by=['data'])
+        operacoes_q = self._operacoes[~self._operacoes['nota_id'].isin(operacoes['nota_id'].drop_duplicates())]
+        self._operacoes = pd.concat([operacoes_q, operacoes])
         self._operacoes['data'] = self._operacoes['nota_id'].apply(lambda x: self._notas.at[x, 'data'])
         self._operacoes.sort_values(by=['data','Q'], ascending=[True, False], inplace=True)
         self._operacoes.reset_index(inplace=True, drop=True)
         self.symbols_map()
+        self.verify_parsed_values()
 
     def symbols_map(self):
         operacoes = self._operacoes
-        operacoes['titulo'] = operacoes['titulo'].apply(lambda x: SYMBOLS_MAP[x] if x in SYMBOLS_MAP else x)
-
+        operacoes['symbol'] = operacoes['titulo'].apply(lambda x: SYMBOLS_MAP[x] if x in SYMBOLS_MAP else x)
 
     def verify_parsed_values(self, tol:float=.02):
-        operacoes = self._operacoes
         for nota_id in self._notas.index:
-            nota = self._notas.loc[nota_id].fillna(0)
-            oper=operacoes[operacoes['nota_id']==nota_id]
-            liq_operacoes = nota['liq_operacoes']
-            check_1 = round(oper['valor'].sum(),2)==-liq_operacoes
-            check_2 = nota['tot_cblc']==liq_operacoes+nota['tx_liq']+nota['tx_reg']
-            v3 = round(
-                nota['tot_cblc']+nota['corretagem']+nota['emolumentos']+nota['tx_ana']+
-                nota['tx_termo_opcoes']+nota['ir_dt'],2
-            )
-            check_3 = round(v3-tol,2)<=nota['liquido']<=round(v3+tol,2)
+            check_1, check_2, check_3 = self.verify_nota_id(nota_id, tol)
             self._notas.loc[nota_id, 'verified'] = all([check_1, check_2, check_3])
+
+    def verify_nota_id(self, nota_id, tol:float=.02, ):
+        operacoes = self._operacoes
+        nota = self._notas.loc[nota_id].fillna(0)
+        oper = operacoes[operacoes['nota_id'] == nota_id]
+        liq_operacoes = nota['liq_operacoes']
+        check_1 = round(oper['valor'].sum(), 2) == -liq_operacoes
+        tot_cblc_calc = round(liq_operacoes + nota['tx_liq'] + nota['tx_reg'], 2)
+        check_2 = nota['tot_cblc'] == tot_cblc_calc
+        if not check_2:
+            print(f"{nota_id}: not passed in chcek 2. tot_cblc:{nota['tot_cblc']} "
+                  f"!= {tot_cblc_calc} (tot_cblc_calc)")
+
+        v3 = round(
+            nota['tot_cblc'] + nota['corretagem'] + nota['emolumentos'] + nota['tx_ana'] + nota[
+                'tx_termo_opcoes'] + nota['ir_dt'], 2)
+        check_3 = round(v3 - tol, 2) <= nota['liquido'] <= round(v3 + tol, 2)
+        if not check_3:
+            print(f'{nota_id}: not passed in chcek 3. v3:{v3} != {nota["liquido"]} (liquido)')
+        return check_1, check_2, check_3
 
     def calc_notas(self):
         def get_sum(cols):
@@ -178,12 +199,12 @@ class read_nota_b3(object):
             operacoes = self.oper
             qant = self.qant.groupby(level=0)
             operacoes['Q_acum'] = 0
-            for titulo in operacoes['titulo'].drop_duplicates():
-                print(titulo)
+            for symbol in operacoes['symbol'].drop_duplicates():
+                print(symbol)
                 for if_dayt in [True, False]:
-                    oper = self.get_oper_tit(titulo, if_dayt, operacoes)
-                    Q_ant = qant.sum().at[titulo, 'Q'] if titulo in qant.indices else 0
-                    P_ant = qant.last().at[titulo, 'P'] if titulo in qant.indices else 0
+                    oper = self.get_oper_tit(symbol, if_dayt, operacoes)
+                    Q_ant = qant.sum().at[symbol, 'Q'] if symbol in qant.indices else 0
+                    P_ant = qant.last().at[symbol, 'P'] if symbol in qant.indices else 0
                     oper['Q_acum'] = oper['Q'].cumsum() + Q_ant
                     oper['v_oper'] = oper['valor']+oper['custo']
                     oper['if_add_q'] = oper.apply(lambda r: r['Q']*(r['Q_acum']-r['Q'])>=0, axis=1)
@@ -208,19 +229,91 @@ class read_nota_b3(object):
 
                     self._operacoes.loc[oper.index, ['Q_acum','pnl']] = oper[['Q_acum','pnl']]
 
-    def get_monthly_results(self, dt_start=None, dt_end=None):
+    def get_monthly_results(self):
+        #%%
         oper = self.oper
         notas = self.notas
-        dt_start = oper['data'].min() if dt_start is None else pd.to_datetime(dt_start)
-        dt_end = oper['data'].max() if dt_end is None else pd.to_datetime(dt_end)
+        pacum = self._pacum.loc[self.cpf]
+        dt_start = pacum['date'].date()
+        dt_end = oper['data'].max()
         period = pd.period_range(dt_start, dt_end,freq='M')
-        df = pd.DataFrame()
+        df = pd.DataFrame(columns=pd.MultiIndex.from_product([['normal','daytrade'],[]]))
+        idx = pd.IndexSlice
+        pacum_norm = df.at[dt_start, idx['normal','resultado']]=pacum['normal']
+        pacum_dayt = df.at[dt_start, idx['daytrade','resultado']]=pacum['daytrade']
+        ir_norm_acum = 0
+        ir_dayt_acum = 0
         for day,month,year in zip(period.day,period.month, period.year):
             dt_end_m = datetime(year, month, day).date()
-            operm = oper[(oper['data'] >= datetime(year, month, 1).date())
-                         & (oper['data'] <= dt_end_m)]
-            df.loc[dt_end_m, ['normal','daytrade']] = operm.query('not dt')['pnl'].sum(), operm.query('dt')['pnl'].sum()
+            if day==dt_start.day and month==dt_start.month:
+                df.loc[dt_end_m, idx['daytrade', 'prej_acum']] = pacum_dayt
+                df.loc[dt_end_m, idx['normal', 'prej_acum']] = pacum_norm
+                continue
+            if month==1:
+                ir_norm_acum = 0
+                ir_dayt_acum = 0
+            dt_start_m = datetime(year, month, 1).date()
+            operm = oper[(oper['data'] >= dt_start_m) & (oper['data'] <= dt_end_m)]
+            notasm = notas[(notas['data'] >= dt_start_m) & (notas['data'] <= dt_end_m)]
+            df.loc[dt_end_m, idx['normal', 'ir_pago']] = notasm['ir_oper'].sum()
+            ir_norm_acum += df.loc[dt_end_m, idx['normal', 'ir_pago']]
+            df.loc[dt_end_m, idx['daytrade', 'ir_pago']] = notasm['ir_dt'].sum()
+            ir_dayt_acum += df.loc[dt_end_m, idx['daytrade', 'ir_pago']]
+            if notasm['vendas_a_vista'].sum()<20000:
+                res_isento = operm.query('dt==False')[(
+                    operm['nota_id'].isin(notasm.query('opção==False').index))]['pnl'].sum()
+                if res_isento:
+                    df.loc[dt_end_m, idx['normal', 'isento']] = res_isento
+            else:
+                res_isento = 0
+            res_norm = operm.query('dt==False')['pnl'].sum()-res_isento
+            res_dayt = operm.query('dt')['pnl'].sum()
+            df.loc[dt_end_m, idx['normal', 'resultado']] = res_norm
+            df.loc[dt_end_m, idx['normal', 'res_trib']] = max(0,res_norm-res_isento+pacum_norm)
+            df.loc[dt_end_m, idx['daytrade', 'resultado']] = res_dayt
+            df.loc[dt_end_m, idx['daytrade', 'res_trib']] = max(0,res_dayt + pacum_dayt)
+            ir_dev = (-df.loc[dt_end_m, idx['normal', 'res_trib']] * 0.15 -
+                      df.loc[dt_end_m, idx['daytrade', 'res_trib']] * 0.2)
+            if ir_dev:
+                df.loc[dt_end_m, idx['total', 'ir_dev']] = ir_dev
+                df.loc[dt_end_m, idx['total', 'pago']] = ir_dayt_acum + ir_norm_acum
+
+                ir_dev -= ir_dayt_acum + ir_norm_acum
+                ir_norm_acum = 0
+                ir_dayt_acum = 0
+            df.loc[dt_end_m, idx['total', 'DARF']] = ir_dev
+            pacum_norm = min(res_norm+pacum_norm,0)
+            pacum_dayt = min(res_dayt + pacum_dayt,0)
+            df.loc[dt_end_m, idx['daytrade', 'prej_acum']] = pacum_dayt
+            df.loc[dt_end_m, idx['normal', 'prej_acum']] = pacum_norm
+        df.sort_index(axis=1, ascending=False, inplace=True)
+        df.fillna(0, inplace=True)
+        #%%
         return df
+
+    def filter_by_date(self,dt_start:datetime, dt_end:datetime=None, if_one_month:bool=True):
+        dt_start = pd.to_datetime(dt_start)
+        oper = self.oper
+        notas = self.notas
+        if if_one_month:
+            dt_start, dt_end = self._get_month_start_and_end_dates(dt_start)
+        elif dt_end:
+            dt_end=pd.to_datetime(dt_end)
+        else:
+            dt_end = oper['data'].max()
+        dt_start = dt_start.date()
+        dt_end = dt_end.date()
+        operm = oper[(oper['data'] >= dt_start) & (oper['data'] <= dt_end)]
+        notasm = notas[(notas['data'] >= dt_start) & (notas['data'] <= dt_end)]
+        return notasm, operm
+
+    def _get_month_start_and_end_dates(self, dt):
+        dt = pd.to_datetime(dt)
+        dt_start = datetime(dt.year, dt.month, 1)
+        dt_end = datetime(dt.year + (0 if dt.month < 12 else 1),
+                          ((dt.month + 1) if dt.month < 12 else 1), 1) - timedelta(
+            days=1)
+        return  dt_start,dt_end
 
     def get_oper_tit(self, symbol, if_dayt:bool=None, operacoes:pd.DataFrame=None):
         '''
@@ -234,17 +327,43 @@ class read_nota_b3(object):
 
         '''
         operacoes = self.oper if operacoes is None else operacoes
-        return operacoes.query(f'titulo=="{symbol}" and {"dt" if if_dayt else "not dt"}').copy()
+        return operacoes.query(f'symbol=="{symbol}" and {"dt" if if_dayt else "not dt"}').copy()
+
+    def get_darf(self, dt):
+        dt=pd.to_datetime(dt)
+        df = self.get_monthly_results()
+        dt_start, dt_end=self._get_month_start_and_end_dates(dt)
+        valor = df[df.index==dt_end.date()][('total','DARF')].values[0]
+        print(f'''
+        https://sicalc.receita.economia.gov.br/sicalc/rapido/contribuinte
+        cpf: {self.cpf}
+        cod receita: 6015
+        valor: {abs(round(valor,2))}
+        periodo: {dt_end:%m/%Y}
+        ''')
 
     @property
     def titulos(self):
         return self._operacoes['titulo'].drop_duplicates().to_list()
 
+    @property
+    def symbols(self):
+        return self._operacoes['symbol'].drop_duplicates().to_list()
+
     def get_titulos_unmaped(self):
-        return list(set([t for t in self._operacoes['titulo'] if t not in SYMBOLS_MAP.values()]))
+        return list(set([t for t in self._operacoes['symbol'] if t not in SYMBOLS_MAP.values()]))
 
     def filter_by_nota_id(self, nota_id):
         return self._notas.loc[nota_id], self._operacoes[self._operacoes['nota_id'] == nota_id]
+
+    def show_last_notas_date(self):
+        for cpf in self.get_cpfs():
+            d=self._notas[self._notas['cpf']==cpf]['data'].max()
+            print(cpf,d)
+        df = self._notas.groupby(by='cpf')
+        df[['data']].last()
+        return df
+
 
     def filter_month(self, dt):
         dt = pd.to_datetime(dt)
@@ -286,21 +405,60 @@ class read_nota_b3(object):
         else:
             print('cpf não informado.')
 
-    def carteira(self):
+    def carteira(self, conta:str=None):
         oper = self.oper
         notas = self.notas
         qant = self.qant
-        idx = list(set(oper['titulo'].drop_duplicates()).union(qant.index))
+        idx = list(set(oper['symbol'].drop_duplicates()).union(qant.index))
         contas = list(set(notas['conta'].drop_duplicates()).union(qant['conta'].drop_duplicates()))
+        if conta:contas=[c for c in contas if c == conta]
         cart = pd.DataFrame(index=idx)
         for conta in contas:
             nota_ids = notas.query(f'conta=="{conta}"').index
             cart[conta] = 0
             cart[conta] = cart.apply(lambda x: oper[
-                (oper['titulo']==x.name) & (oper['nota_id'].isin(nota_ids))]['Q'].sum(),axis=1)
+                (oper['symbol']==x.name) & (oper['nota_id'].isin(nota_ids))]['Q'].sum(),axis=1)
             qant0 = qant[qant['conta']==conta]
             cart.loc[qant0.index, conta] += qant0['Q']
+        cart = cart[(cart!=0).any(axis=1)]
         return cart
+
+    def compare_carteira_with_real(self, path_to_posicao):
+        '''
+        compara posicao real com carteira no bco de dados
+        Args:
+            path_to_posicao (): arquivo em excel, com culnas: symbol e conta (iguais a carteira)
+
+        Returns: posicoes com diferenca (se vier vazio, não há diferença)
+
+        '''
+        posicao = pd.read_excel(path_to_posicao, sheet_name='posicao').set_index('symbol').drop_duplicates()
+
+        posicao.columns = posicao.columns.astype(str)
+        dif = posicao.copy()
+        cart = self.carteira()
+        for col in dif.columns:
+            if col in cart.columns:
+                i = dif.index.intersection(cart.index)
+                dif[col] = dif.loc[i,[col]].apply(lambda x: x[col] - cart.at[x.name,col], axis =1)
+                for i in cart.index.difference(posicao.index):
+                    dif.loc[i, col]=-cart.loc[i, col]
+        dif=dif[(dif!=0).any(axis=1)]
+        i = dif.index.intersection(posicao.index)
+        cols = dif.columns.copy()
+        for col in cols:
+            c=f'real_{col}'
+            dif[c]=0
+            dif.loc[i, c] = posicao.loc[i, col]
+        i = dif.index.intersection(cart.index)
+        for col in cols:
+            c = f'cart_{col}'
+            dif[c]=0
+            dif.loc[i, c] = cart.loc[i, col]
+        si = self.symbols_map_inverted_dict()
+        for i in dif.index:
+            dif.loc[i, 'map']=str(si.get(i))
+        return dif
 
     def get_nota(self, nota_id):
         return self._notas.loc[nota_id]
