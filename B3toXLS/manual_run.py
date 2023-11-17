@@ -6,7 +6,7 @@ import os
 import B3toXLS.cfg as cfg
 from .cfg import NOTAS_MAP, SYMBOLS_MAP
 
-class read_nota_b3(object):
+class notas_b3(object):
     def __init__(self):
         self._notas = pd.read_pickle(cfg.FILE_NOTAS) if os.path.isfile(cfg.FILE_NOTAS) else pd.DataFrame()
         self._operacoes = pd.read_pickle(cfg.FILE_OPER) if os.path.isfile(cfg.FILE_OPER) else pd.DataFrame(columns=['nota_id'])
@@ -30,6 +30,7 @@ class read_nota_b3(object):
             print('Não houve mudanças.')
             return
         if self._notas['verified'].all():
+            self.calc_notas()
             self.save()
             print(f'Notas adicionadas:\n{idx_new}')
             for file in files:
@@ -136,6 +137,7 @@ class read_nota_b3(object):
         self._operacoes.reset_index(inplace=True, drop=True)
         self.symbols_map()
         self.verify_parsed_values()
+
 
     def symbols_map(self):
         operacoes = self._operacoes
