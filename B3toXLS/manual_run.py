@@ -4,7 +4,8 @@ import pdfplumber
 import pandas as pd
 import os
 import B3toXLS.cfg as cfg
-from .cfg import NOTAS_MAP, SYMBOLS_MAP
+from B3toXLS.cfg import NOTAS_MAP, SYMBOLS_MAP
+from utils import create_unique_name
 
 class notas_b3(object):
     def __init__(self):
@@ -167,6 +168,28 @@ class notas_b3(object):
         if not check_3:
             print(f'{nota_id}: not passed in chcek 3. v3:{v3} != {nota["liquido"]} (liquido)')
         return check_1, check_2, check_3
+
+    def set_expired_tit(self, titulo:str, year:int):
+        oper = self.get_oper_tit(titulo)
+        oper = oper[oper['data'].apply(lambda x: x.year == year)]
+        if not len(oper): # chack if there is anything
+            print('Não encontrado.')
+            return
+        for conta in oper['conta']:
+            #get expiration date
+            exp_date = oper['prazo'].iloc[0]
+            assert (oper['prazo']==exp_date).all()
+            exp_date = exp_date.split('/')
+            exp_date = datetime(int(exp_date[1]),int(exp_date[0]),25 )
+            if exp_date>datetime.now(): # check if date passed
+                print(f'please wait till {exp_date} to do this operation at conta {conta}.')
+                continue
+            nota_idx = create_unique_name('ajuste', self._notas.index)
+            self._notas.columns
+
+            self.oper
+
+
 
     def calc_notas(self):
         def get_sum(cols):
@@ -513,4 +536,10 @@ def find_operacoes(tables):
                 matching_lists.extend(find_operacoes(item))
     return matching_lists
 
+
+if __name__ == '__main__':
+    rn = notas_b3()
+    self = rn
+    rn.check_updates()
+    rn.cpf = '154.006.938-90'
 
