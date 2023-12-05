@@ -186,7 +186,6 @@ class notas_b3(object):
                 continue
             nota_idx = create_unique_name('ajuste', self._notas.index)
             self._notas.columns
-
             self.oper
 
 
