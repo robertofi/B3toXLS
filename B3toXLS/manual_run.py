@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from datetime import  datetime, timedelta
 import pdfplumber
@@ -5,7 +7,7 @@ import pandas as pd
 import os
 import B3toXLS.cfg as cfg
 from B3toXLS.cfg import NOTAS_MAP, SYMBOLS_MAP
-from utils import create_unique_name
+from utils import create_unique_name, toList
 
 class notas_b3(object):
     def __init__(self):
@@ -25,15 +27,16 @@ class notas_b3(object):
             print('Nada de novo para adicionar.')
             return
         idx = self._notas.index
-        self.extract_tables(files)
+        res = self.extract_tables(files)
         idx_new = self._notas.index.difference(idx)
         if not len(idx_new):
             print('Não houve mudanças.')
             return
         if self._notas['verified'].all():
-            self.calc_notas()
+            self.calc_notas(**res)
             self.save()
-            print(f'Notas adicionadas:\n{idx_new}')
+            print(f'Notas adicionadas:\n{idx_new}\n'
+                  f'Symbols unmaped:\n {[{k:"" for k in self.get_titulos_unmaped()}]}')
             for file in files:
                 file_dest = f'{cfg.PATH_PARSED}/{file.split(cfg.PATH_NOTAS)[1]}'
                 os.system(f'mv "{file}" "{file_dest}"')
@@ -47,7 +50,45 @@ class notas_b3(object):
         self._qant.to_csv(cfg.FILE_QANT)
         self._pacum.to_csv(cfg.FILE_PACUM)
 
-    def extract_tables(self, files:list, skip_before='20221231'):
+    def criar_nota_de_ajuste(self, dt, conta):
+        values = {'pagina':1,'file':'','corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,
+         'tx_liq':0,'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+         'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
+         'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0,'opção':0,'verified':0}
+        if self.cpf is None:
+            raise Exception('Defina um CPF')
+        nota_id = create_unique_name('aj',['aj'] + self._notas.index.to_list(), format='03d')
+        self._notas.loc[nota_id, ['data', 'cpf', 'conta']] = pd.to_datetime(dt).date(), self.cpf, str(conta)
+        self._notas.loc[nota_id, values.keys()] = values.values()
+        return nota_id
+
+    def criar_oper_expirar_opcao(self, symbol, nota_id):
+        nota = self.notas.loc[nota_id]
+        oper = self.get_oper_tit(symbol)
+        if not len(oper):
+            warnings.warn('Título não encontrado')
+            return
+        oper=oper[oper['data']<=nota['data']]
+        Q = -oper['Q'].sum()
+        values = oper.iloc[-1].to_dict()
+        values.update({'nota_id':nota_id,
+                       'c/v': "V" if Q<0 else "C",
+                       'Q':Q,
+                       'P':0,
+                       'valor':0,
+                       'd/c': "C" if Q<0 else "D",
+                       'dt':False,
+                       'data':nota['data'],
+
+                       'custo':0,
+                       'Q_acum':0,
+                       'pnl':0
+                       })
+
+        idx = self._operacoes.index.max() + 1
+        self._operacoes.loc[idx] = pd.Series(values)
+
+    def extract_tables(self, files:list):
         def parse_str(col):
             map = NOTAS_MAP[col]
             if isinstance(map, dict):
@@ -81,7 +122,8 @@ class notas_b3(object):
         operacoes = pd.DataFrame(columns=['nota_id'])
         notas = pd.DataFrame()
         notas.index.name='nota_id'
-        skip_before = pd.to_datetime(skip_before) if skip_before else None
+        cpfs = []
+        from_date = None
         for file in files:
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
@@ -101,8 +143,11 @@ class notas_b3(object):
                             print(f'skipping file/page: {file}/{page} - nota ({nota_id}) already read.')
                             continue
                         cpf = topo[10].split(' ')[-1]
+                        if not cpf in cpfs:
+                            cpfs.append(cpf)
                         conta = topo[10].split(' ')[0]
                         data = pd.to_datetime(topo0[2],format='%d/%m/%Y').date()
+                        from_date = data if from_date is None or data<from_date else from_date
                         notas.loc[nota_id, ['data','cpf','conta','pagina','file']]=data,cpf,conta,page.page_number, file
                         for col in NOTAS_MAP:
                             notas.at[nota_id, col] = parse_str(col)
@@ -138,6 +183,7 @@ class notas_b3(object):
         self._operacoes.reset_index(inplace=True, drop=True)
         self.symbols_map()
         self.verify_parsed_values()
+        return dict(cpfs=cpfs, from_date=from_date)
 
 
     def symbols_map(self):
@@ -188,16 +234,18 @@ class notas_b3(object):
             self._notas.columns
             self.oper
 
-
-
-    def calc_notas(self):
+    def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
         def get_sum(cols):
             return sum([nota[c] for c in cols])
-        for cpf in self.get_cpfs():
+        cpfs = toList(cpfs) if cpfs else [self.cpf] if self.cpf else self.get_cpfs()
+        from_date = pd.to_datetime(from_date) if from_date else min(self._notas['data'])
+        for cpf in cpfs:
             self.cpf=cpf
             notas = self.notas
             operacoes = self.oper
             for nota_id in notas.index:
+                if notas.at[nota_id, 'data']<from_date:
+                    continue
                 nota = notas.loc[nota_id]
                 oper = operacoes[operacoes['nota_id']==nota_id].copy()
                 vendas = abs(oper.query(f'not dt and valor<0')['valor'].sum())
@@ -214,7 +262,7 @@ class notas_b3(object):
                 elif tot_normal:
                     tx_normal = tx_bov_cblc
                     tx_dt = 0
-                tx_normal = -nota['corretagem']/(tot_dt+tot_normal) + tx_normal/tot_normal if tx_normal else 0
+                tx_normal = -nota['corretagem']/(tot_dt+tot_normal) + tx_normal/tot_normal if tx_normal and (tot_dt+tot_normal) else 0
                 tx_dt = -nota['corretagem']/(tot_dt+tot_normal) + tx_dt/tot_dt if tot_dt else 0
                 oper['custo'] = oper.apply(
                     lambda r: abs(r['valor'] * (tx_dt if r['dt'] else tx_normal)), axis=1)
@@ -269,7 +317,7 @@ class notas_b3(object):
         ir_dayt_acum = 0
         for day,month,year in zip(period.day,period.month, period.year):
             dt_end_m = datetime(year, month, day).date()
-            if day==dt_start.day and month==dt_start.month:
+            if day==dt_start.day and month==dt_start.month and year==dt_start.year:
                 df.loc[dt_end_m, idx['daytrade', 'prej_acum']] = pacum_dayt
                 df.loc[dt_end_m, idx['normal', 'prej_acum']] = pacum_norm
                 continue
@@ -353,8 +401,15 @@ class notas_b3(object):
         operacoes = self.oper if operacoes is None else operacoes
         return operacoes.query(f'symbol=="{symbol}" and {"dt" if if_dayt else "not dt"}').copy()
 
-    def get_darf(self, dt):
-        dt=pd.to_datetime(dt)
+    def get_pnl_tit(self, symbols, if_dayt:bool=None):
+        return [rn.get_oper_tit(s, if_dayt)['pnl'].sum() for s in toList(symbols)]
+
+    def get_darf(self, dt:(str, datetime)=None):
+        if dt:
+            dt = pd.to_datetime(dt)
+        else:
+            dt = datetime.now()
+            dt=dt.replace(month= dt.month-1 if dt.month>1 else 12)
         df = self.get_monthly_results()
         dt_start, dt_end=self._get_month_start_and_end_dates(dt)
         valor = df[df.index==dt_end.date()][('total','DARF')].values[0]
@@ -539,6 +594,6 @@ def find_operacoes(tables):
 if __name__ == '__main__':
     rn = notas_b3()
     self = rn
-    rn.check_updates()
-    rn.cpf = '154.006.938-90'
+    # rn.check_updates()
+    # rn.cpf = '154.006.938-90'
 
