@@ -1,5 +1,5 @@
 import warnings
-
+from copy import deepcopy
 import numpy as np
 from datetime import  datetime, timedelta
 import pdfplumber
@@ -128,6 +128,7 @@ class notas_b3(object):
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
                     # Extrai o texto da página atual
+
                     text = page.extract_text()
                     # print(text)
 
