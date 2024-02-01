@@ -20,9 +20,9 @@ NOTAS_MAP = dict(
     emolumentos = 'Emolumentos',
     tx_oper = 'Taxa Operacional',
     tx_liq = 'Taxa de liquidação',
-    tx_reg = 'Taxa de Registro',
-    tx_ana = 'Taxa A.N.A.',
-    tx_termo_opcoes = 'Taxa de termo/opções',
+    tx_reg = dict(txt='Taxa de Registro',sign=-1,second_try=dict(idx = -1,sign=-1)),
+    tx_ana = dict(txt='Taxa A.N.A.',second_try=dict(idx = -1)),
+    tx_termo_opcoes = dict(txt='Taxa de termo/opções',second_try=dict(idx = -1)),
     execucao = dict(txt = 'Execução', idx = 1) ,
     ir_dt = dict(txt = 'IRRF Day Trade:', idx = -4, sign=-1) ,
     impostos = 'Impostos' ,
@@ -35,7 +35,13 @@ NOTAS_MAP = dict(
     vendas_a_vista = dict(txt = 'Vendas à vista', idx = 3),
     compras_a_vista = dict(txt = 'Compras à vista', idx = 3),
 )
-
+NOTAS_MAP_B3_V2 = dict(
+    data=dict(txt='Nr. nota Folha Data pregão', idx = 2, split_idx=1,type='str'),
+    cpf=dict(txt='Cliente C.P.F./C.N.P.J/C.V.M./C.O.B.', idx = -1, split_idx=1,type='str'),
+    conta=dict(txt='Cliente C.P.F./C.N.P.J/C.V.M./C.O.B.', idx = 0, split_idx=1,type='str'),
+    nota_id=dict(txt='Nr. nota Folha Data pregão', idx = 0, split_idx=1,type='str'),
+    corretora=dict(txt='Nr. nota Folha Data pregão', idx = 0, split_idx=2,type='str')
+)
 SYMBOLS_MAP = {
     'ODONTOPREV ON NM':'ODPV3',
     'FLEURY ON NM':'FLRY3',
@@ -237,7 +243,14 @@ SYMBOLS_MAP = {
  'LAVVI ON ED NM': 'LAVV3',
  'COPASA ON ED NM': 'CSMG3',
  'PETRORIO ON ATZ NM': 'PRIO3',
- 'BRASIL ON EDJ NM': 'BBAS3'
+ 'BRASIL ON EDJ NM': 'BBAS3',
+'FIAGRO SUNO CI ER': 'SNAG11',
+    'FIAGRO VCRA CI': 'VCRA11',
+    'FIAGRO KINEA CI': 'KNCA11',
+    'LAVVI ON NM': 'LAVV3',
+'FIP PERFIN CI': 'PFIN11',
+    'GGBRE PN 22,35': 'GGBR4'
+
 
 }
 
@@ -246,3 +259,4 @@ TAXAS = dict(
     liquidacao = dict(vista = 0.00025, opcao = 0.000275, vista_dt = 0.00018, opcao_dt = 0.00018),
     registro = dict(vista = 0., opcao = 0.000695, vista_dt = 0., opcao_dt = 0.00015),
 )
+
