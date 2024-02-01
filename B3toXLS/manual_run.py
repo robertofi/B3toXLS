@@ -89,36 +89,7 @@ class notas_b3(object):
         self._operacoes.loc[idx] = pd.Series(values)
 
     def extract_tables(self, files:list):
-        def parse_str(col):
-            map = NOTAS_MAP[col]
-            if isinstance(map, dict):
-                txt = map.get('txt')
-                idx = map.get('idx')
-                idx_sign = map.get('idx_sign')
-                sign = map.get('sign',1)
-            else:
-                txt = map
-                idx = -2
-                idx_sign = -1
-                sign=1
-            pos = text.find(txt)
-            if pos<0: return
-            s = text[pos:].split('\n')[0].split(' ')
-            try:
-                return sign * pd.to_numeric(s[idx].replace('.', '').replace(',', '.')) * (
-                    -1 if idx_sign and s[idx_sign] == 'D'  else 1)
-            except:
-                if 'second_try' in map:
-                    map = map['second_try']
-                    idx = map.get('idx')
-                    idx_sign = map.get('idx_sign')
-                    sign = map.get('sign', 1)
-                    try:
-                        return sign * pd.to_numeric(s[idx].replace('.', '').replace(',', '.')) * (
-                            -1 if idx_sign and s[idx_sign] == 'D' else 1)
-                    except:
-                        pass
-                return np.NaN
+
         operacoes = pd.DataFrame(columns=['nota_id'])
         notas = pd.DataFrame()
         notas.index.name='nota_id'
@@ -128,39 +99,14 @@ class notas_b3(object):
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
                     # Extrai o texto da página atual
+                    res = parse_nota_b3_v1(cpfs,file,from_date,notas,operacoes,page)
+                    if not res.get('success'):
+                        print(f'skipping file/page: {file}/{page} - nota ({nota_id}) already read.')
 
-                    text = page.extract_text()
-                    # print(text)
+                    from_date = data if from_date is None or data < from_date else from_date
 
-                    tables = page.extract_tables({'intersection_y_tolerance': 21})
+                    operacoes = pd.concat([operacoes,oper],ignore_index=True)
 
-                    # parse notas
-                    try:
-                        topo = tables[0][0][0].split('\n')
-                        topo0 = topo[2].split(' ')
-                        corretora = topo[3].split(' ')[0].lower()
-                        nota_id = f'{corretora}_{topo0[0]}'
-                        if nota_id in notas.index and page.page_number<=notas.at[nota_id,'pagina']:
-                            print(f'skipping file/page: {file}/{page} - nota ({nota_id}) already read.')
-                            continue
-                        cpf = topo[10].split(' ')[-1]
-                        if not cpf in cpfs:
-                            cpfs.append(cpf)
-                        conta = topo[10].split(' ')[0]
-                        data = pd.to_datetime(topo0[2],format='%d/%m/%Y').date()
-                        from_date = data if from_date is None or data<from_date else from_date
-                        notas.loc[nota_id, ['data','cpf','conta','pagina','file']]=data,cpf,conta,page.page_number, file
-                        for col in NOTAS_MAP:
-                            notas.at[nota_id, col] = parse_str(col)
-                        oper = find_operacoes(tables)
-                        oper = pd.DataFrame(oper,
-                                            columns=['q', 'negociacao', 'c/v', 'tipo_mercado', 'prazo', 'titulo',
-                                                     'obs', 'Q', 'P', 'valor', 'd/c'])
-                        oper['nota_id'] = nota_id
-                        operacoes = pd.concat([operacoes, oper], ignore_index=True)
-                        print(f'parsed: {nota_id}/{page.page_number}')
-                    except Exception as e:
-                        print(f'Error in file: {file} - {page} - {e}')
         notas['opção'] = notas.apply(lambda row: row['opcoes_vendas']!=0 or row['opcoes_compras']!=0, axis=1)
 
         # ajusta campos numéricos
@@ -185,7 +131,6 @@ class notas_b3(object):
         self.symbols_map()
         self.verify_parsed_values()
         return dict(cpfs=cpfs, from_date=from_date)
-
 
     def symbols_map(self):
         operacoes = self._operacoes
@@ -590,6 +535,75 @@ def find_operacoes(tables):
             else:
                 matching_lists.extend(find_operacoes(item))
     return matching_lists
+
+
+def parse_str(col):
+    map = NOTAS_MAP[col]
+    if isinstance(map,dict):
+        txt = map.get('txt')
+        idx = map.get('idx')
+        idx_sign = map.get('idx_sign')
+        sign = map.get('sign',1)
+    else:
+        txt = map
+        idx = -2
+        idx_sign = -1
+        sign = 1
+    pos = text.find(txt)
+    if pos < 0: return
+    s = text[pos:].split('\n')[0].split(' ')
+    try:
+        return sign * pd.to_numeric(s[idx].replace('.','').replace(',','.')) * (
+            -1 if idx_sign and s[idx_sign] == 'D' else 1)
+    except:
+        if 'second_try' in map:
+            map = map['second_try']
+            idx = map.get('idx')
+            idx_sign = map.get('idx_sign')
+            sign = map.get('sign',1)
+            try:
+                return sign * pd.to_numeric(s[idx].replace('.','').replace(',','.')) * (
+                    -1 if idx_sign and s[idx_sign] == 'D' else 1)
+            except:
+                pass
+        return np.NaN
+
+def parse_nota_b3_v1(cpfs,file,from_date,notas,operacoes,page):
+        text = page.extract_text()
+        # print(text)
+        tables = page.extract_tables({'intersection_y_tolerance':21})
+        notas = pd.DataFrame()
+        notas.index.name='nota_id'
+        # parse notas
+        try:
+            topo = tables[0][0][0].split('\n')
+            topo0 = topo[2].split(' ')
+            corretora = topo[3].split(' ')[0].lower()
+            nota_id = f'{corretora}_{topo0[0]}'
+            if nota_id in notas.index and page.page_number <= notas.at[nota_id,'pagina']:
+                return dict(success=False,error='')
+
+                # continue
+            cpf = topo[10].split(' ')[-1]
+            if not cpf in cpfs:
+                cpfs.append(cpf)
+            conta = topo[10].split(' ')[0]
+            data = pd.to_datetime(topo0[2],format='%d/%m/%Y').date()
+            notas.loc[nota_id,['data','cpf','conta','pagina',
+                               'file']] = data,cpf,conta,page.page_number,file
+            for col in NOTAS_MAP:
+                notas.at[nota_id,col] = parse_str(col)
+            oper = find_operacoes(tables)
+            oper = pd.DataFrame(oper,
+                                columns=['q','negociacao','c/v','tipo_mercado','prazo','titulo',
+                                         'obs','Q','P','valor','d/c'])
+            oper['nota_id'] = nota_id
+            print(f'parsed: {nota_id}/{page.page_number}')
+            return True, nota, oper
+        except Exception as e:
+            print(f'Error in file: {file} - {page} - {e}')
+            return False, None, None
+
 
 
 if __name__ == '__main__':
