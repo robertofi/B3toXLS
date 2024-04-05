@@ -1,17 +1,13 @@
-from B3toXLS import cfg as cfg
-from B3toXLS.cfg import SYMBOLS_MAP,NOTAS_MAP,NOTAS_MAP_B3_V2
-from datetime import datetime
-import pandas as pd
-import os
+from B3toXLS.cfg import NOTAS_MAP,NOTAS_MAP_B3_V2
 from utils import toList, create_unique_name
 import warnings
-from copy import deepcopy
 import numpy as np
 from datetime import  datetime, timedelta
 import pdfplumber
 import pandas as pd
 import os
 import B3toXLS.cfg as cfg
+import json
 
 class notas_b3(object):
     def __init__(self):
@@ -23,6 +19,12 @@ class notas_b3(object):
         self._pacum = pd.DataFrame([], columns=['noraml', 'daytrade', 'date']) \
             if not os.path.isfile(cfg.FILE_PACUM) else pd.read_csv(cfg.FILE_PACUM).set_index('cpf')
         self._pacum['date'] = pd.to_datetime(self._pacum['date'])
+        self.read_symbols_map()
+
+    def read_symbols_map(self):
+        global SYMBOLS_MAP
+        with open(cfg.FILE_TO_SYMBOLS_MAP,'r') as file:
+            SYMBOLS_MAP = json.load(file)
 
     def check_updates(self):
         files = os.listdir(cfg.PATH_NOTAS)
@@ -40,7 +42,7 @@ class notas_b3(object):
             self.calc_notas(**res)
             self.save()
             print(f'Notas adicionadas:\n{idx_new}\n'
-                  f'Symbols unmaped:\n {[{k:"" for k in self.get_titulos_unmaped()}]}')
+                  f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
             for file in files:
                 file_dest = f'{cfg.PATH_PARSED}/{file.split(cfg.PATH_NOTAS)[1]}'
                 os.system(f'mv "{file}" "{file_dest}"')
@@ -162,8 +164,15 @@ class notas_b3(object):
         return dict(cpfs=cpfs, from_date=from_date)
 
     def symbols_map(self):
+        self.read_symbols_map()
         operacoes = self._operacoes
         operacoes['symbol'] = operacoes['titulo'].apply(lambda x: SYMBOLS_MAP[x] if x in SYMBOLS_MAP else x)
+        unmapped = self.get_unmaped_symbols()
+        if unmapped:
+            print(f'Unmapped Symbols: \n {unmapped}')
+        else:
+            print('All Symbols Mapped')
+
 
     def verify_parsed_values(self, tol:float=.02):
         for nota_id in self._notas.index:
@@ -406,7 +415,7 @@ class notas_b3(object):
     def symbols(self):
         return self._operacoes['symbol'].drop_duplicates().to_list()
 
-    def get_titulos_unmaped(self):
+    def get_unmaped_symbols(self):
         return list(set([t for t in self._operacoes['symbol'] if t not in SYMBOLS_MAP.values()]))
 
     def filter_by_nota_id(self, nota_id):
@@ -526,13 +535,13 @@ class notas_b3(object):
         return self._notas.loc[nota_id]
 
     def symbols_map_inverted_dict(self):
-        return {v:[k for k in cfg.SYMBOLS_MAP if cfg.SYMBOLS_MAP[k]==v] for v in cfg.SYMBOLS_MAP.values()}
+        return {v:[k for k in B3toXLS.symbols_map.SYMBOLS_MAP if B3toXLS.symbols_map.SYMBOLS_MAP[k] == v] for v in B3toXLS.symbols_map.SYMBOLS_MAP.values()}
 
     def find_symbols(self, symbols):
         b3i = pd.read_csv(cfg.FILE_INSTRUMENTOS).set_index('TckrSymb')
         idx = b3i.index.intersection(symbols)
         b3i = b3i.loc[idx,['SpcfctnCd','CrpnNm']]
-        to_map = self.get_titulos_unmaped()
+        to_map = self.get_unmaped_symbols()
         for tm in to_map:
             tms = tm.split(' ')
             tms0 = tms[0]
@@ -593,22 +602,23 @@ def parse_str(text, col, MAP):
         txt = map.get('txt')
         idx = map.get('idx', -2)
         idx_sign = map.get('idx_sign',-1)
-        sign = map.get('sign',1)
+        sign = map.get('sign',None)
         split_idx = map.get('split_idx',0)
         data_type = map.get('type', 'number')
     else:
         txt = map
         idx = -2
         idx_sign = -1
-        sign = 1
+        sign = None
         split_idx = 0
         data_type = 'number'
     pos = text.find(txt)
     if pos < 0: return
     s = text[pos:].split('\n')[split_idx].split(' ')
     try:
-        return (sign * pd.to_numeric(s[idx].replace('.','').replace(',','.')) * (
-            -1 if idx_sign and s[idx_sign] == 'D' else 1) if data_type=='number'
+        sign=sign if sign else -1 if idx_sign and s[idx_sign] == 'D' else 1
+        return (sign * pd.to_numeric(s[idx].replace('.','').replace(',','.'))
+                if data_type=='number'
                 else str(s[idx]) if data_type=='str'
                 else pd.to_datetime(s[idx]) if data_type=='datetime'
                 else s[idx])
