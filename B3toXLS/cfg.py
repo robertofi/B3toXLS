@@ -5,12 +5,14 @@ PATH_ROOT = str(pathlib.Path(PATH).parent)+'/'
 PATH_DATA = '/etc/tekton_data/b3'
 PATH_NOTAS = f'{PATH_DATA}/notas'
 PATH_PARSED = f'{PATH_NOTAS}/parsed'
+PATH_TO_RTD_XLS = '/home/r/gdrive/Econometrics'
 FILE_NOTAS = f'{PATH_DATA}/notas.pkl'
 FILE_OPER = f'{PATH_DATA}/operacoes.pkl'
 FILE_INSTRUMENTOS = f'{PATH_DATA}/b3instruments.csv'
 FILE_QANT = f'{PATH_DATA}/posicao_anterior.csv'
 FILE_PACUM = f'{PATH_DATA}/prejuizo_acum.csv'
 FILE_TO_SYMBOLS_MAP = f'{PATH}/symbols_map.json'
+
 
 NOTAS_MAP = dict(
     corretagem = 'Total Custos / Despesas',

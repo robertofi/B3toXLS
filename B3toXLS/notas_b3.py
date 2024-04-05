@@ -8,6 +8,7 @@ import pandas as pd
 import os
 import B3toXLS.cfg as cfg
 import json
+from openpyxl import load_workbook
 
 class notas_b3(object):
     def __init__(self):
@@ -39,10 +40,14 @@ class notas_b3(object):
             print('Não houve mudanças.')
             return
         if self._notas['verified'].all():
+            while len(self.get_unmaped_symbols()):
+                print(f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
+                print(f'Map the symbols at the file: {cfg.FILE_TO_SYMBOLS_MAP}')
+                input('Press Enter to continue.')
+                self.symbols_map()
             self.calc_notas(**res)
             self.save()
-            print(f'Notas adicionadas:\n{idx_new}\n'
-                  f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
+            print(f'Notas adicionadas:\n{idx_new}\n')
             for file in files:
                 file_dest = f'{cfg.PATH_PARSED}/{file.split(cfg.PATH_NOTAS)[1]}'
                 os.system(f'mv "{file}" "{file_dest}"')
@@ -170,8 +175,10 @@ class notas_b3(object):
         unmapped = self.get_unmaped_symbols()
         if unmapped:
             print(f'Unmapped Symbols: \n {unmapped}')
+            return False
         else:
             print('All Symbols Mapped')
+            return True
 
 
     def verify_parsed_values(self, tol:float=.02):
@@ -284,8 +291,7 @@ class notas_b3(object):
                         p_medio_prev=p_medio
                         oper.at[i, 'p_medio'] = p_medio
                         oper.at[i, 'pnl'] = pnl
-
-                    self._operacoes.loc[oper.index, ['Q_acum','pnl']] = oper[['Q_acum','pnl']]
+                    self._operacoes.loc[oper.index, ['Q_acum','pnl','p_medio']] = oper[['Q_acum','pnl','p_medio']]
 
     def get_monthly_results(self):
         #%%
@@ -481,9 +487,14 @@ class notas_b3(object):
         notas = self.notas
         qant = self.qant
         idx = list(set(oper['symbol'].drop_duplicates()).union(qant.index))
-        contas = list(set(notas['conta'].drop_duplicates()).union(qant['conta'].drop_duplicates()))
+        contas = self.get_contas()
         if conta:contas=[c for c in contas if c == conta]
         cart = pd.DataFrame(index=idx)
+        def f(x):
+            try:
+                return notas.at[oper.query(f'symbol=="{x.name}"')['nota_id'].values[0],'opção']
+            except:
+                return False
         for conta in contas:
             nota_ids = notas.query(f'conta=="{conta}"').index
             cart[conta] = 0
@@ -491,8 +502,44 @@ class notas_b3(object):
                 (oper['symbol']==x.name) & (oper['nota_id'].isin(nota_ids))]['Q'].sum(),axis=1)
             qant0 = qant[qant['conta']==conta]
             cart.loc[qant0.index, conta] += qant0['Q']
-        cart = cart[(cart!=0).any(axis=1)]
-        return cart
+        cart['opção'] = cart.apply(lambda x: f(x),axis=1)
+
+        # set p_medio for symbols in database
+        idx = cart.index.intersection(oper['symbol'])
+        cart.loc[idx, 'P']=[self.get_oper_tit(i)['p_medio'].values[-1] for i in idx]
+
+        # set p_medio for symbols from previous operations
+        idx = cart.index.difference(oper['symbol'])
+        cart.loc[idx, 'P']=qant.loc[idx, 'P']
+
+        cart = cart[(cart[contas]!=0).any(axis=1)]
+        return cart.sort_index()
+
+    def get_contas(self):
+        return list(set(self.notas['conta'].drop_duplicates()).union(self.qant['conta'].drop_duplicates()))
+
+    def save_carteira_to_rtd(self):
+        file = f'{cfg.PATH_TO_RTD_XLS}/carteira_{self.cpf}.xlsx'
+        cart = self.carteira()
+        contas = self.get_contas()
+        cart['Q'] = cart[ contas].sum(axis=1)
+        cart.drop(contas, inplace=True, axis=1)
+        cart_acoes = cart[~cart['opção']].drop('opção', axis=1)
+        cart_opcoes = cart[cart['opção']].drop('opção', axis=1)
+
+        try:
+            book = load_workbook(file)
+        except FileNotFoundError:
+            book = None
+
+        with pd.ExcelWriter(file,engine='openpyxl') as writer:
+            if book:
+                writer.book = book
+            # Write your DataFrames as new sheets
+            cart_acoes.to_excel(writer,sheet_name='ações',index=True)
+            cart_opcoes.to_excel(writer,sheet_name='opções',index=True)
+        # df.to_excel(file)
+        print(f'file saved at: {file}')
 
     def compare_carteira_with_real(self, path_to_posicao):
         '''
