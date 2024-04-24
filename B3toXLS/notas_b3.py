@@ -14,6 +14,7 @@ class notas_b3(object):
     def __init__(self):
         self._notas = pd.read_pickle(cfg.FILE_NOTAS) if os.path.isfile(cfg.FILE_NOTAS) else pd.DataFrame()
         self._operacoes = pd.read_pickle(cfg.FILE_OPER) if os.path.isfile(cfg.FILE_OPER) else pd.DataFrame(columns=['nota_id'])
+        self._eventos = pd.read_pickle(cfg.FILE_EVENTOS) if os.path.isfile(cfg.FILE_EVENTOS) else pd.DataFrame(columns=['nota_id'])
         self._cpf = None
         self._qant = pd.DataFrame([], columns=['Q', 'P']) \
             if not os.path.isfile(cfg.FILE_QANT) else pd.read_csv(cfg.FILE_QANT).set_index('symbol')
@@ -60,6 +61,7 @@ class notas_b3(object):
         self._operacoes.to_pickle(cfg.FILE_OPER)
         self._qant.to_csv(cfg.FILE_QANT)
         self._pacum.to_csv(cfg.FILE_PACUM)
+        self._eventos.to_pickle(cfg.FILE_EVENTOS)
 
     def criar_nota_de_ajuste(self, dt, conta):
         values = {'pagina':1,'file':'','corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,
@@ -229,7 +231,7 @@ class notas_b3(object):
 
     def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
         def get_sum(cols):
-            return sum([nota[c] for c in cols])
+            return sum([nota[c] if not np.isnan(nota[c]) else 0 for c in cols])
         cpfs = toList(cpfs) if cpfs else [self.cpf] if self.cpf else self.get_cpfs()
         from_date = pd.to_datetime(from_date) if from_date else min(self._notas['data'])
         for cpf in cpfs:
@@ -259,7 +261,9 @@ class notas_b3(object):
                 tx_dt = -nota['corretagem']/(tot_dt+tot_normal) + tx_dt/tot_dt if tot_dt else 0
                 oper['custo'] = oper.apply(
                     lambda r: abs(r['valor'] * (tx_dt if r['dt'] else tx_normal)), axis=1)
-                assert round(oper['custo'].sum(),2) == round(tx_bov_cblc+abs(nota['corretagem']),2)
+                if not round(oper['custo'].sum(),2) == round(tx_bov_cblc+abs(nota['corretagem']),2):
+                    raise Exception(f"Error at nota_id={nota_id}: { round(oper['custo'].sum(),2)} != "
+                                    f"{round(tx_bov_cblc+abs(nota['corretagem']),2)}")
                 self._operacoes.loc[oper.index, 'custo'] = oper['custo']
             operacoes = self.oper
             qant = self.qant.groupby(level=0)
@@ -267,6 +271,7 @@ class notas_b3(object):
             for symbol in operacoes['symbol'].drop_duplicates():
                 print(symbol)
                 for if_dayt in [True, False]:
+
                     oper = self.get_oper_tit(symbol, if_dayt, operacoes)
                     Q_ant = qant.sum().at[symbol, 'Q'] if symbol in qant.indices else 0
                     P_ant = qant.last().at[symbol, 'P'] if symbol in qant.indices else 0
@@ -275,6 +280,17 @@ class notas_b3(object):
                     oper['if_add_q'] = oper.apply(lambda r: r['Q']*(r['Q_acum']-r['Q'])>=0, axis=1)
                     oper['p_medio'] = oper.apply(lambda r: r['v_oper']/r['Q'], axis=1)
                     oper['p_medio_prev'] = oper['p_medio'].shift(1).fillna(0)
+
+                    # add splits on Q_acum
+                    if not if_dayt and symbol in self._eventos.index.get_level_values(1):
+                        eventos = self._eventos.xs(symbol,0,1)
+                        splits = eventos[eventos['split'] != 1]
+                        for date, split in zip(splits.index, splits['split']):
+                            oper_q0 = oper[oper['data'] < date]
+                            oper_q1 = oper[oper['data'] >= date]
+                            if len(oper_q0) and len(oper_q1):
+                                Q_add = (split-1) * oper_q0[ 'Q_acum'].values[-1]
+                                oper.loc[oper_q1.index,'Q_acum']+=Q_add
 
                     # calc preço medio
                     p_medio_prev = P_ant
@@ -286,9 +302,10 @@ class notas_b3(object):
                             pnl = 0
                         else:
                             p_medio = p_medio_prev
-                            Q_pnl = min(-Q, Q_acum-Q)
+                            Q_pnl = min(-Q, Q_acum-Q) if Q<0 else max(-Q, Q_acum-Q)
                             pnl = Q_pnl*(v_oper/Q) - Q_pnl*p_medio
-                        p_medio_prev=p_medio
+                        p_medio_prev= p_medio
+                        q_acum_prev = Q_acum
                         oper.at[i, 'p_medio'] = p_medio
                         oper.at[i, 'pnl'] = pnl
                     self._operacoes.loc[oper.index, ['Q_acum','pnl','p_medio']] = oper[['Q_acum','pnl','p_medio']]
@@ -391,7 +408,7 @@ class notas_b3(object):
 
         '''
         operacoes = self.oper if operacoes is None else operacoes
-        return operacoes.query(f'symbol=="{symbol}" and {"dt" if if_dayt else "not dt"}').copy()
+        return operacoes.query(f'symbol=="{symbol}" and {"dt==True" if if_dayt else "dt==False"}').copy()
 
     def get_pnl_tit(self, symbols, if_dayt:bool=None):
         return [rn.get_oper_tit(s, if_dayt)['pnl'].sum() for s in toList(symbols)]
@@ -513,10 +530,13 @@ class notas_b3(object):
         cart.loc[idx, 'P']=qant.loc[idx, 'P']
 
         cart = cart[(cart[contas]!=0).any(axis=1)]
+        cart['V'] = cart[contas].sum(axis=1) * cart['P']
         return cart.sort_index()
 
     def get_contas(self):
         return list(set(self.notas['conta'].drop_duplicates()).union(self.qant['conta'].drop_duplicates()))
+
+
 
     def save_carteira_to_rtd(self):
         file = f'{cfg.PATH_TO_RTD_XLS}/carteira_{self.cpf}.xlsx'
@@ -582,7 +602,40 @@ class notas_b3(object):
         return self._notas.loc[nota_id]
 
     def symbols_map_inverted_dict(self):
-        return {v:[k for k in B3toXLS.symbols_map.SYMBOLS_MAP if B3toXLS.symbols_map.SYMBOLS_MAP[k] == v] for v in B3toXLS.symbols_map.SYMBOLS_MAP.values()}
+        return {v:[k for k in SYMBOLS_MAP if SYMBOLS_MAP[k] == v] for v in SYMBOLS_MAP.values()}
+
+    def all_symbols(self):
+        try:
+            return list(set(SYMBOLS_MAP.values()))
+        except:
+            self.read_symbols_map()
+            return list(set(SYMBOLS_MAP.values()))
+
+    def add_event(self, date, symbol, event):
+        '''
+
+        Args:
+            date ():
+            symbol ():
+            event (): dict, keys 'split' and 'dividend' ex.: {'split':2}
+
+        Returns:
+
+        '''
+        if symbol not in self.all_symbols():
+            raise Exception(f'Symbol not found. It must be in the symbols map file')
+        date = pd.to_datetime(date).date()
+        self._eventos.loc[(date,symbol), 'split'] = event.get('split',1.)
+        self._eventos.loc[(date,symbol), 'dividend'] = event.get('dividend',0.)
+
+    def drop_event(self, date, symbol):
+        if symbol not in self.all_symbols():
+            raise Exception(f'Symbol not found. It must be in the symbols map file')
+        date = pd.to_datetime(date).date()
+        try:
+            self._eventos.drop((date,symbol), inplace=True)
+        except:
+            print(f'Evento not found: {(date,symbol)}')
 
     def find_symbols(self, symbols):
         b3i = pd.read_csv(cfg.FILE_INSTRUMENTOS).set_index('TckrSymb')
