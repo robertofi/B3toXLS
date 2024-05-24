@@ -28,6 +28,135 @@ class notas_b3(object):
         with open(cfg.FILE_TO_SYMBOLS_MAP,'r') as file:
             SYMBOLS_MAP = json.load(file)
 
+    def add_or_update_nota(self, data:dict):
+        """
+        ${NAME} - description
+
+        Args:
+            data =
+            data = {
+                        'nota_id':'aj_xxx',
+                        'data': '09/02/2023',
+                         'conta': 'XXX',
+                         'file': 'XXX.pdf',
+                         'corretagem': 0,
+                         'liquido': 0,
+                         'ir_oper': 0,
+                         'emolumentos': 0,
+                         'tx_oper': 0,
+                         'tx_liq': 0,
+                         'tx_reg': 0,
+                         'tx_ana': 0,
+                         'tx_termo_opcoes': 0,
+                         'execucao': 0,
+                         'ir_dt': 0,
+                         'impostos': 0,
+                         'outros': 0,
+                         'liq_operacoes': 0,
+                         'tot_cblc': 0,
+                         'debentures': 0,
+                         'opcoes_vendas': 0,
+                         'opcoes_compras': 0,
+                         'vendas_a_vista': 0,
+                         'compras_a_vista': 0}
+
+        Returns:
+            Description of the return value.
+        """
+
+        nota_id = data.pop('nota_id',None)
+        if not nota_id:
+            warnings.warn(f"Provide a nota_id")
+            return
+        if nota_id in self._notas.index:
+            print(f"Nota ID '{nota_id}' already exist.")
+
+        mandatory_fields = ['data','conta','file','corretagem','liquido']
+        all_fields = ['data','cpf','conta','file','corretagem','liquido','ir_oper','emolumentos',
+                      'tx_oper','tx_liq','tx_reg','tx_ana','tx_termo_opcoes','execucao','ir_dt',
+                      'impostos','outros','liq_operacoes','tot_cblc','debentures','opcoes_vendas',
+                      'opcoes_compras','vendas_a_vista','compras_a_vista']
+
+        # Check for mandatory fields
+        for field in mandatory_fields:
+            if field not in data:
+                warnings.warn(f"Mandatory field '{field}' is missing.")
+                return
+
+        # Check if self._cpf is None
+        if self._cpf is None:
+            warnings.warn("CPF is not set. Cannot add row.")
+            return
+
+        # Fill in default values for missing fields
+        row = {field:data.get(field,0) for field in all_fields}
+
+        # Ensure 'data' is converted to datetime
+        row['data'] = pd.to_datetime(row['data']).date()
+
+        # Set 'cpf' field with self._cpf
+        row['cpf'] = self._cpf
+
+        # Append the new row to the DataFrame
+        self._notas.loc[nota_id] = pd.Series(row)
+
+    def add_or_update_oper(self, data:dict, idx:int=None):
+        '''
+        data = {'nota_id': '',
+         'q': 0,
+         'negociacao': 0,
+         'c/v': '',
+         'tipo_mercado': 0,
+         'prazo': '',
+         'titulo': '',
+         'obs': '',
+         'Q': '',
+         'P': '',
+         'valor': '',
+         'd/c': '',
+         'dt': '', # day trade True or False
+         'data': '',
+         'symbol': '',
+         }
+
+        '''
+        nota_id = data.pop('nota_id',None)
+        if not nota_id:
+            raise Exception(f"Provide a nota_id")
+            return
+        if not nota_id in self._notas.index:
+            raise Exception(f"Nota ID '{nota_id}' don´t exist.")
+            return
+        columns_info = {
+                        'q':{'type':int,'mandatory':False,'default':''},
+                                                'negociacao':{'type':str,'mandatory':False, 'default':'1-BOVESPA'},
+                                                'c/v':{'type':str,'mandatory':True},
+                                                'tipo_mercado':{'type':str,'mandatory':True},
+                                                'prazo':{'type':str,'mandatory':False,'default':''},
+                                                'titulo':{'type':str,'mandatory':True},
+                                                'obs':{'type':str,'mandatory':False,'default':''},
+                                                'Q':{'type':float,'mandatory':True},
+                                                'P':{'type':float,'mandatory':True},
+                                                'valor':{'type':float,'mandatory':False,'default':0},
+                                                'd/c':{'type':str,'mandatory':True},
+                                                'dt':{'type':bool,'mandatory':False,'default':False},
+                                                'symbol':{'type':str,'mandatory':False,'default':''}}
+        mandatory_fields = [ f for f in columns_info if columns_info[f]['mandatory']]
+        for field in mandatory_fields:
+            if field not in data:
+                raise Exception(f"Mandatory field '{field}' is missing.")
+                return
+        data = {k:data[k] if k in data else columns_info[k]['default'] for k in columns_info}
+        data['data']=self._notas.at[nota_id,'data']
+        data['nota_id']=nota_id
+        data['Q'] = abs(data['Q']) * (1 if data['c/v']=='C' else -1)
+        data['valor']=data['P']*data['Q']
+        if idx is None:
+            self._operacoes = self._operacoes.append(data, ignore_index=True)
+        else:
+            self._operacoes.loc[idx]=data
+
+
     def check_updates(self):
         files = os.listdir(cfg.PATH_NOTAS)
         files  = [f'{cfg.PATH_NOTAS}/{file}' for file in files if file[-3:] == 'pdf']
@@ -213,21 +342,53 @@ class notas_b3(object):
     def set_expired_tit(self, titulo:str, year:int):
         oper = self.get_oper_tit(titulo)
         oper = oper[oper['data'].apply(lambda x: x.year == year)]
+        oper_cols = ['nota_id', 'q', 'negociacao', 'c/v', 'tipo_mercado', 'prazo', 'titulo', 'obs', 'Q', 'P', 'valor', 'd/c', 'dt', 'data', 'symbol']
         if not len(oper): # chack if there is anything
             print('Não encontrado.')
             return
-        for conta in oper['conta']:
             #get expiration date
-            exp_date = oper['prazo'].iloc[0]
-            assert (oper['prazo']==exp_date).all()
-            exp_date = exp_date.split('/')
-            exp_date = datetime(int(exp_date[1]),int(exp_date[0]),25 )
-            if exp_date>datetime.now(): # check if date passed
-                print(f'please wait till {exp_date} to do this operation at conta {conta}.')
-                continue
-            nota_idx = create_unique_name('ajuste', self._notas.index)
-            self._notas.columns
-            self.oper
+                #get exp date
+        exp_date = oper['prazo'].iloc[0]
+        assert (oper['prazo']==exp_date).all()
+        month_op, year_op = exp_date.split('/')
+        year_op = int(year_op)+2000
+        assert year == year_op
+        exp_date = third_friday(year_op, int(month_op)) # regular options expires on third friday
+        if exp_date>datetime.now().date(): # check if date passed
+            print(f'please wait till {exp_date} to do this operation at conta {conta}.')
+            return
+        # create notas ajuste
+        contas =oper['nota_id'].apply(lambda x: self.notas.at[x,'conta']).to_list()
+        notas={}
+        for conta in contas:
+            if conta in notas: continue
+            nota_id = create_unique_name('aj', self._notas.index, '03d', False)
+            row = {'nota_id':nota_id,'data':exp_date,'conta':conta,'file':'no_file',
+                'corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,'tx_liq':0,
+                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+                'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
+                'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0}
+            notas[conta]=nota_id
+            self.add_or_update_nota(row)
+        oper['conta'] = contas
+        for conta in set(contas):
+            nota_id = notas[conta]
+            row = oper.query(f'conta == "{conta}"').iloc[-1]
+            Q = -row['Q_acum']
+            row['c/v'] = 'V' if np.sign(Q)==-1 else 'C'
+            row['d/c'] = 'C' if np.sign(Q)==-1 else 'D'
+            row['valor'] = row['P'] = 0
+            row['data'] = exp_date
+            row['nota_id'] = nota_id
+            row['Q'] = Q
+            row = {k:row[k] for k in oper_cols}
+            self.add_or_update_oper(row)
+
+
+        self._notas.columns
+        self.oper
+
+
 
     def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
         def get_sum(cols):
@@ -499,7 +660,17 @@ class notas_b3(object):
         else:
             print('cpf não informado.')
 
-    def carteira(self, conta:str=None):
+    def carteira(self, conta:str=None, as_of:datetime=None) -> pd.DataFrame:
+        """
+        ${NAME} - description
+
+        Args:
+            conta: brings positions only for the selected conta (account)
+            as_of: brings positions for the specified date
+
+        Returns: dataframe
+        """
+
         oper = self.oper
         notas = self.notas
         qant = self.qant
@@ -507,11 +678,10 @@ class notas_b3(object):
         contas = self.get_contas()
         if conta:contas=[c for c in contas if c == conta]
         cart = pd.DataFrame(index=idx)
-        def f(x):
-            try:
-                return notas.at[oper.query(f'symbol=="{x.name}"')['nota_id'].values[0],'opção']
-            except:
-                return False
+        if as_of:
+            notas = notas[notas['data'] <= pd.to_datetime(as_of)]
+            oper = oper[oper['data'] <= pd.to_datetime(as_of)]
+
         for conta in contas:
             nota_ids = notas.query(f'conta=="{conta}"').index
             cart[conta] = 0
@@ -519,6 +689,14 @@ class notas_b3(object):
                 (oper['symbol']==x.name) & (oper['nota_id'].isin(nota_ids))]['Q'].sum(),axis=1)
             qant0 = qant[qant['conta']==conta]
             cart.loc[qant0.index, conta] += qant0['Q']
+        cart = cart[(cart[contas]!=0).any(axis=1)].copy()
+
+        # set is opção flag
+        def f(x):
+            try:
+                return notas.at[oper.query(f'symbol=="{x.name}"')['nota_id'].values[0],'opção']
+            except:
+                return False
         cart['opção'] = cart.apply(lambda x: f(x),axis=1)
 
         # set p_medio for symbols in database
@@ -527,9 +705,8 @@ class notas_b3(object):
 
         # set p_medio for symbols from previous operations
         idx = cart.index.difference(oper['symbol'])
-        cart.loc[idx, 'P']=qant.loc[idx, 'P']
+        cart.loc[idx, 'P']=qant.groupby(level=0).mean().loc[idx, 'P']
 
-        cart = cart[(cart[contas]!=0).any(axis=1)]
         cart['V'] = cart[contas].sum(axis=1) * cart['P']
         return cart.sort_index()
 
@@ -819,3 +996,13 @@ def parse_nota_b3_v2(file,page):
 
 
 PARSE_NOTAS_FUNCS = [parse_nota_b3_v1, parse_nota_b3_v2]
+
+def third_friday(year: int, month: int) -> datetime.date:
+    import datetime
+    # Find the first day of the given month and year
+    first_day = datetime.date(year, month, 1)
+    # Find the first Friday of the month
+    first_friday = first_day + datetime.timedelta(days=(4 - first_day.weekday() + 7) % 7)
+    # Calculate the third Friday by adding 14 days to the first Friday
+    third_friday = first_friday + datetime.timedelta(days=14)
+    return third_friday
