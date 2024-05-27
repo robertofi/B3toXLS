@@ -9,6 +9,8 @@ import os
 import B3toXLS.cfg as cfg
 import json
 from openpyxl import load_workbook
+from .extract_b3_data import get_company_info
+# todo: incluir nota de ajuste para o caso de eventos, caso contrário se não há operações com aquele papel não reflete na carteira (ex. FLRY3, GGBR4)
 
 class notas_b3(object):
     def __init__(self):
@@ -323,6 +325,9 @@ class notas_b3(object):
         oper = operacoes[operacoes['nota_id'] == nota_id]
         liq_operacoes = nota['liq_operacoes']
         check_1 = round(oper['valor'].sum(), 2) == -liq_operacoes
+        if not check_1:
+            print(f"{nota_id}: not passed in chcek 2. soma operações:{round(oper['valor'].sum(), 2)} "
+                  f"!= {liq_operacoes} (liq_operacoes)")
         tot_cblc_calc = round(liq_operacoes + nota['tx_liq'] + nota['tx_reg'], 2)
         check_2 = nota['tot_cblc'] == tot_cblc_calc
         if not check_2:
@@ -660,7 +665,7 @@ class notas_b3(object):
         else:
             print('cpf não informado.')
 
-    def carteira(self, conta:str=None, as_of:datetime=None) -> pd.DataFrame:
+    def carteira(self, conta:str=None, as_of:datetime=None, if_get_cnpj:bool=False) -> pd.DataFrame:
         """
         ${NAME} - description
 
@@ -708,6 +713,10 @@ class notas_b3(object):
         cart.loc[idx, 'P']=qant.groupby(level=0).mean().loc[idx, 'P']
 
         cart['V'] = cart[contas].sum(axis=1) * cart['P']
+        if if_get_cnpj:
+            for symbol in cart.index:
+                cnpj,company_name = get_company_info(symbol)
+
         return cart.sort_index()
 
     def get_contas(self):
