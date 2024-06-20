@@ -839,6 +839,8 @@ class notas_b3(object):
             for i in fi:
                 fis += f"'{i}' "
             print(f"'{tm}': {fis[:-1]},")
+    def __repr__(self):
+        return f'{self.__class__.__name__}(cpf={self.cpf})'
 
 
 MIN_VALOR_ISENTO = 20000
