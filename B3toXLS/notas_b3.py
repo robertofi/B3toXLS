@@ -1,5 +1,5 @@
 from B3toXLS.cfg import NOTAS_MAP,NOTAS_MAP_B3_V2
-from utils import toList, create_unique_name
+from utils import toList, create_unique_name, get_new_file_name_if_exists, get_first_last_day
 import warnings
 import numpy as np
 from datetime import  datetime, timedelta
@@ -173,15 +173,21 @@ class notas_b3(object):
             return
         if self._notas['verified'].all():
             while len(self.get_unmaped_symbols()):
-                print(f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
-                print(f'Map the symbols at the file: {cfg.FILE_TO_SYMBOLS_MAP}')
-                input('Press Enter to continue.')
-                self.symbols_map()
+                try:
+                    print(f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
+                    print(f'Map the symbols at the file: {cfg.FILE_TO_SYMBOLS_MAP}')
+                    input('Press Enter to continue.')
+                    self.symbols_map()
+                except Exception as e:
+                    print(f'Error: {e}')
+
             self.calc_notas(**res)
             self.save()
             print(f'Notas adicionadas:\n{idx_new}\n')
             for file in files:
-                file_dest = f'{cfg.PATH_PARSED}/{file.split(cfg.PATH_NOTAS)[1]}'
+                file_name = file.split(cfg.PATH_NOTAS)[1]
+                file_name = get_new_file_name_if_exists(file_name, cfg.PATH_PARSED)
+                file_dest = f'{cfg.PATH_PARSED}/{file_name}'
                 os.system(f'mv "{file}" "{file_dest}"')
         else:
             print('Há notas com erros:')
@@ -388,11 +394,6 @@ class notas_b3(object):
             row['Q'] = Q
             row = {k:row[k] for k in oper_cols}
             self.add_or_update_oper(row)
-
-
-        self._notas.columns
-        self.oper
-
 
 
     def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
@@ -618,6 +619,15 @@ class notas_b3(object):
         df[['data']].last()
         return df
 
+    def filter_prazo(self, prazo:str):
+        oper = self.oper.sort_values('data')
+        return oper[oper['prazo'].str.contains(prazo)].copy()
+
+    def filter_notas_month(self, month, year=None):
+        notas = self.notas
+        year = year if year else datetime.now().year
+        first_day,last_day = get_first_last_day(year, month)
+        return notas[(notas['data']>=first_day.date()) & (notas['data']<=last_day.date())].copy()
 
     def filter_month(self, dt):
         dt = pd.to_datetime(dt)
