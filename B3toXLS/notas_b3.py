@@ -350,6 +350,26 @@ class notas_b3(object):
             print(f'tot_cblc+corretagem+emolumentos+tx_ana+tx_termo_opcoes !=  liquido')
         return check_1, check_2, check_3
 
+    def show_expired_tit(self, if_set_expired:bool=False):
+        cart_df = self.carteira()
+        operacoes = self.oper
+        dt_today = datetime.now().date()
+        expired = []
+        for symbol in cart_df.index:
+            oper=self.get_oper_tit(symbol, operacoes=operacoes)
+            if not len(oper): continue
+            prazo = oper['prazo'].values[-1].split('/')
+            if len(prazo)==2 and prazo[0].isdigit() and prazo[1].isdigit():
+                exp_date = third_friday(int(prazo[1])+2000, int(prazo[0]))
+                if exp_date<dt_today:
+                    expired.append(symbol)
+                    if if_set_expired:
+                        print(f'Setting Expired: {symbol} - Year: {exp_date.year}')
+                        self.set_expired_tit(symbol, exp_date.year)
+        if expired:
+            return cart_df.loc[expired]
+
+
     def set_expired_tit(self, titulo:str, year:int):
         oper = self.get_oper_tit(titulo)
         oper = oper[oper['data'].apply(lambda x: x.year == year)]
@@ -635,7 +655,10 @@ class notas_b3(object):
         dt_start = datetime(per.year, per.month, 1).date()
         dt_end = datetime(per.year, per.month, per.day).date()
         oper = self.oper.sort_values('data')
-        return oper[(oper['data'] >= dt_start) & (oper['data'] <= dt_end)]
+        notas = self.notas
+        df= oper[(oper['data'] >= dt_start) & (oper['data'] <= dt_end)].copy()
+        df['opção'] = df.set_index('symbol').apply(lambda x:  is_opcao(x, notas, oper), axis=1).values
+        return df
 
     def get_cpfs(self):
         return self._notas['cpf'].drop_duplicates().to_list()
@@ -706,13 +729,7 @@ class notas_b3(object):
             cart.loc[qant0.index, conta] += qant0['Q']
         cart = cart[(cart[contas]!=0).any(axis=1)].copy()
 
-        # set is opção flag
-        def f(x):
-            try:
-                return notas.at[oper.query(f'symbol=="{x.name}"')['nota_id'].values[0],'opção']
-            except:
-                return False
-        cart['opção'] = cart.apply(lambda x: f(x),axis=1)
+        cart['opção'] = cart.apply(lambda x: is_opcao(x, notas, oper),axis=1)
 
         # set p_medio for symbols in database
         idx = cart.index.intersection(oper['symbol'])
@@ -1015,7 +1032,6 @@ def parse_nota_b3_v2(file,page):
     except Exception as e:
         return dict(success=False, error=e)
 
-
 PARSE_NOTAS_FUNCS = [parse_nota_b3_v1, parse_nota_b3_v2]
 
 def third_friday(year: int, month: int) -> datetime.date:
@@ -1027,3 +1043,11 @@ def third_friday(year: int, month: int) -> datetime.date:
     # Calculate the third Friday by adding 14 days to the first Friday
     third_friday = first_friday + datetime.timedelta(days=14)
     return third_friday
+
+
+# set is opção flag
+def is_opcao(x, notas, oper):
+    try:
+        return notas.at[oper.query(f'symbol=="{x.name}"')['nota_id'].values[0],'opção']
+    except:
+        return False
