@@ -598,7 +598,7 @@ class notas_b3(object):
         return operacoes.query(f'symbol=="{symbol}" and {"dt==True" if if_dayt else "dt==False"}').copy()
 
     def get_pnl_tit(self, symbols, if_dayt:bool=None):
-        return [rn.get_oper_tit(s, if_dayt)['pnl'].sum() for s in toList(symbols)]
+        return [self.get_oper_tit(s, if_dayt)['pnl'].sum() for s in toList(symbols)]
 
     def get_darf(self, dt:(str, datetime)=None):
         if dt:
@@ -632,12 +632,7 @@ class notas_b3(object):
         return self._notas.loc[nota_id], self._operacoes[self._operacoes['nota_id'] == nota_id]
 
     def show_last_notas_date(self):
-        for cpf in self.get_cpfs():
-            d=self._notas[self._notas['cpf']==cpf]['data'].max()
-            print(cpf,d)
-        df = self._notas.groupby(by='cpf')
-        df[['data']].last()
-        return df
+        return self._notas.groupby(by=['cpf','conta'])[['data']].last()
 
     def filter_prazo(self, prazo:str):
         oper = self.oper.sort_values('data')
@@ -645,19 +640,19 @@ class notas_b3(object):
 
     def filter_notas_month(self, month, year=None):
         notas = self.notas
-        year = year if year else datetime.now().year
-        first_day,last_day = get_first_last_day(year, month)
-        return notas[(notas['data']>=first_day.date()) & (notas['data']<=last_day.date())].copy()
+        dt_start,dt_end = get_first_last_day(year, month)
+        return notas[(notas['data']>=dt_start.date()) & (notas['data']<=dt_end.date())].copy()
 
-    def filter_month(self, dt):
-        dt = pd.to_datetime(dt)
-        per = pd.period_range(dt,dt, freq='M')[0]
-        dt_start = datetime(per.year, per.month, 1).date()
-        dt_end = datetime(per.year, per.month, per.day).date()
+    def filter_month(self, month, year=None, if_pnl_per_symbol:bool=False):
+        dt_start,dt_end = get_first_last_day(year,month)
         oper = self.oper.sort_values('data')
         notas = self.notas
-        df= oper[(oper['data'] >= dt_start) & (oper['data'] <= dt_end)].copy()
+        df= oper[(oper['data'] >= dt_start.date()) & (oper['data'] <= dt_end.date())].copy()
         df['opção'] = df.set_index('symbol').apply(lambda x:  is_opcao(x, notas, oper), axis=1).values
+        if if_pnl_per_symbol:
+            df = df.groupby('symbol')[['pnl']].sum()
+            df.sort_values('pnl', inplace=True)
+
         return df
 
     def get_cpfs(self):
@@ -757,8 +752,8 @@ class notas_b3(object):
         contas = self.get_contas()
         cart['Q'] = cart[ contas].sum(axis=1)
         cart.drop(contas, inplace=True, axis=1)
-        cart_acoes = cart[~cart['opção']].drop('opção', axis=1)
-        cart_opcoes = cart[cart['opção']].drop('opção', axis=1)
+        cart_acoes = cart[cart['opção']!=True].drop('opção', axis=1)
+        cart_opcoes = cart[cart['opção']==True].drop('opção', axis=1)
 
         try:
             book = load_workbook(file)
