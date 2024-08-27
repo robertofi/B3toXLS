@@ -1,5 +1,5 @@
 from B3toXLS.cfg import NOTAS_MAP,NOTAS_MAP_B3_V2
-from utils import toList, create_unique_name, get_new_file_name_if_exists, get_first_last_day
+from utils import toList, create_unique_name, get_new_file_name_if_exists, get_first_last_day, third_friday
 import warnings
 import numpy as np
 from datetime import  datetime, timedelta
@@ -1029,15 +1029,6 @@ def parse_nota_b3_v2(file,page):
 
 PARSE_NOTAS_FUNCS = [parse_nota_b3_v1, parse_nota_b3_v2]
 
-def third_friday(year: int, month: int) -> datetime.date:
-    import datetime
-    # Find the first day of the given month and year
-    first_day = datetime.date(year, month, 1)
-    # Find the first Friday of the month
-    first_friday = first_day + datetime.timedelta(days=(4 - first_day.weekday() + 7) % 7)
-    # Calculate the third Friday by adding 14 days to the first Friday
-    third_friday = first_friday + datetime.timedelta(days=14)
-    return third_friday
 
 
 # set is opção flag
