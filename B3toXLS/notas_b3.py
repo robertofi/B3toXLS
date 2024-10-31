@@ -313,7 +313,12 @@ class notas_b3(object):
         operacoes['symbol'] = operacoes['titulo'].apply(lambda x: SYMBOLS_MAP[x] if x in SYMBOLS_MAP else x)
         unmapped = self.get_unmaped_symbols()
         if unmapped:
-            print(f'Unmapped Symbols: \n {unmapped}')
+            rplc = [("'",'"'),('[',''),(']',''),('{',''),('}','')]
+            unmapped_str = str(unmapped)
+            for r in rplc:
+                unmapped_str=unmapped_str.replace(*r)
+            unmapped_str = ", \n".join(unmapped_str.split(', '))
+            print(f'Unmapped Symbols: \n{unmapped_str}')
             return False
         else:
             print('All Symbols Mapped')
@@ -652,7 +657,7 @@ class notas_b3(object):
         if if_pnl_per_symbol:
             df = df.groupby('symbol')[['pnl']].sum()
             df.sort_values('pnl', inplace=True)
-
+        print(f'Total PnL: {df["pnl"].sum():,.2f}')
         return df
 
     def get_cpfs(self):
