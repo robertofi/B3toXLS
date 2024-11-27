@@ -360,7 +360,7 @@ class notas_b3(object):
         operacoes = self.oper
         dt_today = datetime.now().date()
         expired = []
-        for symbol in cart_df.index:
+        for symbol in cart_df.query(f'opção==True').index:
             oper=self.get_oper_tit(symbol, operacoes=operacoes)
             if not len(oper): continue
             prazo = oper['prazo'].values[-1].split('/')
