@@ -374,6 +374,84 @@ class notas_b3(object):
         if expired:
             return cart_df.loc[expired]
 
+    def set_convert_tit(self, titulo:str, date:str, new_tit:str,fator:float):
+        '''
+
+        Args:
+            titulo: título a ser convertido
+            date: data de conversão
+            new_tit: novo título - se new_tit==titulo, realizará agrupamento ou desdobramento do titulo
+            fator:  fator de conversão
+
+
+        Returns:
+
+        '''
+
+        carteira = self.carteira(as_of=date)
+        if titulo not in carteira.index or not new_tit or not fator:
+            return False
+        carteira = carteira.loc[titulo]
+        date = pd.to_datetime(date)
+        P = carteira['P']
+        for conta in self.get_contas():
+            Q = carteira[conta]
+            if  Q == 0: continue
+            nota_id = create_unique_name('aj', self._notas.index, '03d', False)
+            row = {'nota_id':nota_id,'data':date,'conta':conta,'file':'no_file',
+                'corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,'tx_liq':0,
+                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+                'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
+                'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0,'opção':False}
+            self.add_or_update_nota(row)
+
+            # cria oper para excluir tit antigo[
+            if new_tit != titulo:
+                oper_row = {'nota_id': nota_id,
+                            'q': '',
+                            'negociacao': '1-BOVESPA',
+                            'c/v': 'V' if Q > 0 else 'C',
+                            'tipo_mercado': 'VISTA',
+                            'prazo': '',
+                            'titulo': titulo,
+                            'obs': '',
+                            'Q': abs(Q),
+                            'P': P,
+                            'valor': P*Q,
+                            'd/c': 'C' if Q > 0 else 'D',
+                            'dt': False,
+                            'data': date,
+                            'symbol': titulo}
+                self.add_or_update_oper(oper_row)
+
+            # cria oper para add novo tit
+            if new_tit != titulo:
+                newQ = int(Q*fator)
+                newP = P*Q/newQ
+            else:
+                newQ = int(Q*fator)-Q
+                newP = 0
+            oper_row = {'nota_id': nota_id,
+                        'q': '',
+                        'negociacao': '1-BOVESPA',
+                        'c/v': 'V' if newQ < 0 else 'C',
+                        'tipo_mercado': 'VISTA',
+                        'prazo': '',
+                        'titulo': new_tit,
+                        'obs': '',
+                        'Q': abs(newQ),
+                        'P': newP,
+                        'valor': newQ*newP,
+                        'd/c': 'C' if newQ < 0 else 'D',
+                        'dt': False,
+                        'data': date,
+                        'symbol': new_tit}
+            self.add_or_update_oper(oper_row)
+
+
+
+
+
 
     def set_expired_tit(self, titulo:str, year:int):
         oper = self.get_oper_tit(titulo)
@@ -426,6 +504,8 @@ class notas_b3(object):
             return sum([nota[c] if not np.isnan(nota[c]) else 0 for c in cols])
         cpfs = toList(cpfs) if cpfs else [self.cpf] if self.cpf else self.get_cpfs()
         from_date = pd.to_datetime(from_date) if from_date else min(self._notas['data'])
+        print('calculando:', end=' ')
+
         for cpf in cpfs:
             self.cpf=cpf
             notas = self.notas
@@ -449,6 +529,8 @@ class notas_b3(object):
                 elif tot_normal:
                     tx_normal = tx_bov_cblc
                     tx_dt = 0
+                else:
+                    tx_normal = tx_dt = 0
                 tx_normal = -nota['corretagem']/(tot_dt+tot_normal) + tx_normal/tot_normal if tx_normal and (tot_dt+tot_normal) else 0
                 tx_dt = -nota['corretagem']/(tot_dt+tot_normal) + tx_dt/tot_dt if tot_dt else 0
                 oper['custo'] = oper.apply(
@@ -588,7 +670,7 @@ class notas_b3(object):
             days=1)
         return  dt_start,dt_end
 
-    def get_oper_tit(self, symbol, if_dayt:bool=None, operacoes:pd.DataFrame=None):
+    def get_oper_tit(self, symbol, if_dayt:bool=None, operacoes:pd.DataFrame=None, conta:str=''):
         '''
 
         Args:
@@ -600,7 +682,11 @@ class notas_b3(object):
 
         '''
         operacoes = self.oper if operacoes is None else operacoes
-        return operacoes.query(f'symbol=="{symbol}" and {"dt==True" if if_dayt else "dt==False"}').copy()
+        oper =  operacoes.query(f'symbol=="{symbol}" and {"dt==True" if if_dayt else "dt==False"}').copy()
+        oper.insert(1,'conta','')
+        oper['conta'] = oper['nota_id'].apply(lambda x: self._notas.at[x,'conta'])
+        return oper.query(f'conta=="{conta}"') if conta else oper
+
 
     def get_pnl_tit(self, symbols, if_dayt:bool=None):
         return [self.get_oper_tit(s, if_dayt)['pnl'].sum() for s in toList(symbols)]
