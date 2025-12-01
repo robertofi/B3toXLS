@@ -192,6 +192,8 @@ class notas_b3(object):
         else:
             print('Há notas com erros:')
             print(self._notas[self._notas['verified']==False])
+    def show_unverified_notas(self):
+        print(self._notas[self._notas['verified']==False])
 
     def save(self):
         self._notas.to_pickle(cfg.FILE_NOTAS)
@@ -498,6 +500,11 @@ class notas_b3(object):
             row = {k:row[k] for k in oper_cols}
             self.add_or_update_oper(row)
 
+    def set_exercised_option(self):
+        print('Instruções para registrar uma opção na qual foi exercido:\n'
+              '1. No arquivo symbols_map.json, mapeie o título com final "E" com o ativo que será adquirido (ex. "CSANV660E ON 6,60": "CSAN3")\n'
+              '2. Execute a função set_expired_tit com a opção na qual foi exercido (ex. rn.set_expired_tit("CSANV660",2025)'
+              )
 
     def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
         def get_sum(cols):
