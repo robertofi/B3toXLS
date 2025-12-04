@@ -5,6 +5,7 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="database" />
     <orderEntry type="module" module-name="utils" />
+    <orderEntry type="module" module-name="utils" />
   </component>
   <component name="PyDocumentationSettings">
     <option name="format" value="GOOGLE" />

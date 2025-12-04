@@ -50,6 +50,7 @@ class notas_b3(object):
                          'tx_reg': 0,
                          'tx_ana': 0,
                          'tx_termo_opcoes': 0,
+                         'tx_transf_ativos': 0,
                          'execucao': 0,
                          'ir_dt': 0,
                          'impostos': 0,
@@ -75,7 +76,7 @@ class notas_b3(object):
 
         mandatory_fields = ['data','conta','file','corretagem','liquido']
         all_fields = ['data','cpf','conta','file','corretagem','liquido','ir_oper','emolumentos',
-                      'tx_oper','tx_liq','tx_reg','tx_ana','tx_termo_opcoes','execucao','ir_dt',
+                      'tx_oper','tx_liq','tx_reg','tx_ana','tx_termo_opcoes','tx_transf_ativos','execucao','ir_dt',
                       'impostos','outros','liq_operacoes','tot_cblc','debentures','opcoes_vendas',
                       'opcoes_compras','vendas_a_vista','compras_a_vista']
 
@@ -204,7 +205,7 @@ class notas_b3(object):
 
     def criar_nota_de_ajuste(self, dt, conta):
         values = {'pagina':1,'file':'','corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,
-         'tx_liq':0,'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+         'tx_liq':0,'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'tx_transf_ativos':0,'execucao':0,'ir_dt':0,'impostos':0,
          'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
          'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0,'opção':0,'verified':0}
         if self.cpf is None:
@@ -347,14 +348,14 @@ class notas_b3(object):
             print(f"{nota_id}: not passed in chcek 2. tot_cblc:{nota['tot_cblc']} "
                   f"!= {tot_cblc_calc} (tot_cblc_calc)")
 
-        vs_cols = ['tot_cblc','corretagem','emolumentos','tx_ana','tx_termo_opcoes','ir_dt']
+        vs_cols = ['tot_cblc','corretagem','emolumentos','tx_ana','tx_termo_opcoes','tx_transf_ativos','ir_dt']
 
         v3 = round(nota[vs_cols].sum(), 2)
         check_3 = round(v3 - tol, 2) <= nota['liquido'] <= round(v3 + tol, 2)
         if not check_3:
             print(f'{nota_id}: not passed in chcek 3. v3:{v3} != {nota["liquido"]} (liquido para)')
             print(nota[vs_cols])
-            print(f'tot_cblc+corretagem+emolumentos+tx_ana+tx_termo_opcoes !=  liquido')
+            print(f'tot_cblc+corretagem+emolumentos+tx_ana+tx_termo_opcoes+tx_transf_ativos !=  liquido')
         return check_1, check_2, check_3
 
     def show_expired_tit(self, if_set_expired:bool=False):
@@ -402,7 +403,7 @@ class notas_b3(object):
             nota_id = create_unique_name('aj', self._notas.index, '03d', False)
             row = {'nota_id':nota_id,'data':date,'conta':conta,'file':'no_file',
                 'corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,'tx_liq':0,
-                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'tx_transf_ativos':0,'execucao':0,'ir_dt':0,'impostos':0,
                 'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
                 'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0,'opção':False}
             self.add_or_update_nota(row)
@@ -481,7 +482,7 @@ class notas_b3(object):
             nota_id = create_unique_name('aj', self._notas.index, '03d', False)
             row = {'nota_id':nota_id,'data':exp_date,'conta':conta,'file':'no_file',
                 'corretagem':0,'liquido':0,'ir_oper':0,'emolumentos':0,'tx_oper':0,'tx_liq':0,
-                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'execucao':0,'ir_dt':0,'impostos':0,
+                'tx_reg':0,'tx_ana':0,'tx_termo_opcoes':0,'tx_transf_ativos':0,'execucao':0,'ir_dt':0,'impostos':0,
                 'outros':0,'liq_operacoes':0,'tot_cblc':0,'debentures':0,'opcoes_vendas':0,
                 'opcoes_compras':0,'vendas_a_vista':0,'compras_a_vista':0}
             notas[conta]=nota_id
@@ -526,7 +527,7 @@ class notas_b3(object):
                 vendas_dt = abs(oper.query(f'dt and valor<0')['valor'].sum())
                 compras = abs(oper.query(f'not dt and valor>0')['valor'].sum())
                 compras_dt = abs(oper.query(f'dt and valor>0')['valor'].sum())
-                tx_bov_cblc = -get_sum(['tx_liq','tx_reg','tx_ana','tx_termo_opcoes','emolumentos'])
+                tx_bov_cblc = -get_sum(['tx_liq','tx_reg','tx_ana','tx_termo_opcoes','tx_transf_ativos','emolumentos','tx_transf_ativos'])
                 tipo = 'opcao' if nota['opção'] else 'vista'
                 tot_normal = vendas+compras
                 tot_dt = vendas_dt+compras_dt

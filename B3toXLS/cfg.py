@@ -14,13 +14,23 @@ FILE_QANT = f'{PATH_DATA}/posicao_anterior.csv'
 FILE_PACUM = f'{PATH_DATA}/prejuizo_acum.csv'
 FILE_TO_SYMBOLS_MAP = f'{PATH}/symbols_map.json'
 
-
+# Parse helper for newer B3 fee field
+TX_TRANSF_ATIVOS_MAP = {
+    'tx_transf_ativos': {
+        'txt': 'Taxa de Transf. de Ativos',
+        'idx': -2,
+        'idx_sign': -1,
+        'split_idx': 0,
+        'type': 'number',
+    }
+}
 NOTAS_MAP = dict(
     corretagem = 'Total Custos / Despesas',
     liquido = 'Líquido para',
     ir_oper = dict(txt='I.R.R.F. s/ operações', idx = -2,idx_sign = -1,sign=1,
                    second_try=dict(idx = -1, sign=-1)),
     emolumentos = 'Emolumentos',
+    tx_transf_ativos = 'Taxa de Transf. de Ativos',
     tx_oper = 'Taxa Operacional',
     tx_liq = 'Taxa de liquidação',
     tx_reg = dict(txt='Taxa de Registro',sign=-1,second_try=dict(idx = -1,sign=-1)),
