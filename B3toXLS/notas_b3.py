@@ -160,9 +160,124 @@ class notas_b3(object):
             self._operacoes.loc[idx]=data
 
 
-    def check_updates(self):
+    @property
+    def _check_updates_state_file(self):
+        """Return the JSON checkpoint file used by `check_updates(resume=True)`."""
+        return f'{cfg.PATH_DATA}/check_updates_state.json'
+
+    def _save_check_updates_state(self, files:list, idx_new:pd.Index, cpfs:list, from_date):
+        """Persist minimal state to resume an interrupted update.
+
+        Args:
+            files: Source PDF files being processed.
+            idx_new: Newly parsed nota IDs in the current run.
+            cpfs: CPF list returned by `extract_tables`.
+            from_date: Oldest trade date parsed in the current run.
+        """
+        payload = {
+            'files': [f for f in files if os.path.isfile(f)],
+            'idx_new': idx_new.to_list(),
+            'cpfs': cpfs if cpfs else [],
+            'from_date': pd.to_datetime(from_date).date().isoformat() if from_date is not None else None
+        }
+        with open(self._check_updates_state_file, 'w') as file:
+            json.dump(payload, file)
+
+    def _load_check_updates_state(self):
+        """Load persisted resume state, or `None` when no checkpoint exists."""
+        if not os.path.isfile(self._check_updates_state_file):
+            return None
+        with open(self._check_updates_state_file, 'r') as file:
+            return json.load(file)
+
+    def _clear_check_updates_state(self):
+        """Delete the update checkpoint file when processing is complete/cancelled."""
+        if os.path.isfile(self._check_updates_state_file):
+            os.remove(self._check_updates_state_file)
+
+    def _move_to_parsed_folder(self, files:list):
+        """Move processed PDFs from `PATH_NOTAS` to the `parsed` folder.
+
+        Existing names are deconflicted using `get_new_file_name_if_exists`.
+        """
+        for file in files:
+            if not os.path.isfile(file):
+                continue
+            file_name = file.split(cfg.PATH_NOTAS)[1]
+            file_name = get_new_file_name_if_exists(file_name, cfg.PATH_PARSED)
+            file_dest = f'{cfg.PATH_PARSED}/{file_name}'
+            os.system(f'mv "{file}" "{file_dest}"')
+
+    def _show_unverified_notas(self):
+        """Print notas that still fail validation (`verified == False`)."""
+        if 'verified' not in self._notas.columns:
+            print('Há notas com erros:')
+            print(self._notas)
+            return
+        verified = self._notas['verified'].fillna(False)
+        print('Há notas com erros:')
+        print(self._notas[verified == False])
+
+    def check_updates(self, resume:bool=False, save_partial:bool=True):
+        """Parse new notes and support safe resume after manual corrections.
+
+        Default mode (`resume=False`):
+            1) Parse PDFs in `cfg.PATH_NOTAS`.
+            2) Save a checkpoint (`check_updates_state.json`) with files/CPFs/date.
+            3) If all new notas are verified, calculate and finalize normally.
+            4) If there are errors, optionally persist partial data and stop.
+
+        Resume mode (`resume=True`):
+            1) Reload checkpoint state when available.
+            2) Re-run symbol mapping and nota verification on current data.
+            3) If still failing, keep data and stop for further corrections.
+            4) If valid, continue with `calc_notas`, save, move PDFs, clear checkpoint.
+
+        Args:
+            resume: Continue from the last interrupted `check_updates` run.
+            save_partial: Persist partial parsed data when validation fails.
+        """
         files = os.listdir(cfg.PATH_NOTAS)
         files  = [f'{cfg.PATH_NOTAS}/{file}' for file in files if file[-3:] == 'pdf']
+        if resume:
+            state = self._load_check_updates_state()
+            if state:
+                files = state.get('files', files)
+                idx_new = pd.Index(state.get('idx_new', []))
+                cpfs = state.get('cpfs') or None
+                from_date = state.get('from_date')
+                from_date = pd.to_datetime(from_date) if from_date else None
+            else:
+                idx_new = pd.Index([])
+                cpfs = self.get_cpfs() if len(self._notas) else None
+                from_date = min(self._notas['data']) if len(self._notas) else None
+            if not len(self._notas):
+                print('Não há atualização pendente para retomar.')
+                self._clear_check_updates_state()
+                return
+            self.symbols_map()
+            self.verify_parsed_values()
+            if not self._notas['verified'].fillna(False).all():
+                if save_partial:
+                    self.save()
+                self._show_unverified_notas()
+                print('Corrija os erros e execute check_updates(resume=True) novamente.')
+                return
+            while len(self.get_unmaped_symbols()):
+                try:
+                    print(f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
+                    print(f'Map the symbols at the file: {cfg.FILE_TO_SYMBOLS_MAP}')
+                    input('Press Enter to continue.')
+                    self.symbols_map()
+                except Exception as e:
+                    print(f'Error: {e}')
+            self.calc_notas(cpfs=cpfs, from_date=from_date)
+            self.save()
+            print(f'Notas processadas:\n{idx_new if len(idx_new) else "retomada"}\n')
+            self._move_to_parsed_folder(files)
+            self._clear_check_updates_state()
+            return
+
         if not len(files):
             print('Nada de novo para adicionar.')
             return
@@ -171,8 +286,10 @@ class notas_b3(object):
         idx_new = self._notas.index.difference(idx)
         if not len(idx_new):
             print('Não houve mudanças.')
+            self._clear_check_updates_state()
             return
-        if self._notas['verified'].all():
+        self._save_check_updates_state(files=files, idx_new=idx_new, cpfs=res.get('cpfs'), from_date=res.get('from_date'))
+        if self._notas['verified'].fillna(False).all():
             while len(self.get_unmaped_symbols()):
                 try:
                     print(f'Symbols unmaped:\n {[{k:"" for k in self.get_unmaped_symbols()}]}')
@@ -185,14 +302,14 @@ class notas_b3(object):
             self.calc_notas(**res)
             self.save()
             print(f'Notas adicionadas:\n{idx_new}\n')
-            for file in files:
-                file_name = file.split(cfg.PATH_NOTAS)[1]
-                file_name = get_new_file_name_if_exists(file_name, cfg.PATH_PARSED)
-                file_dest = f'{cfg.PATH_PARSED}/{file_name}'
-                os.system(f'mv "{file}" "{file_dest}"')
+            self._move_to_parsed_folder(files)
+            self._clear_check_updates_state()
         else:
-            print('Há notas com erros:')
-            print(self._notas[self._notas['verified']==False])
+            if save_partial:
+                self.save()
+                print('Estado parcial salvo para retomada.')
+            self._show_unverified_notas()
+            print('Após corrigir, execute check_updates(resume=True).')
     def show_unverified_notas(self):
         print(self._notas[self._notas['verified']==False])
 
@@ -507,9 +624,98 @@ class notas_b3(object):
               '2. Execute a função set_expired_tit com a opção na qual foi exercido (ex. rn.set_expired_tit("CSANV660",2025)'
               )
 
+    def _split_operacao_row(self, row:pd.Series, q_new:float, dt:bool):
+        """Create a proportional operation row with adjusted quantity and DT flag."""
+        row_new = row.copy()
+        q_old = float(row['Q'])
+        scale = abs(q_new) / abs(q_old) if q_old else 0
+        row_new['Q'] = q_new
+        row_new['dt'] = bool(dt)
+        row_new['c/v'] = 'C' if q_new > 0 else 'V'
+        row_new['d/c'] = 'D' if q_new > 0 else 'C'
+
+        for col in ['valor', 'custo']:
+            if col in row_new and pd.notna(row_new[col]):
+                row_new[col] = row_new[col] * scale
+
+        if 'q' in row_new and pd.notna(row_new['q']) and str(row_new['q']).strip() != '':
+            try:
+                q_field = float(str(row_new['q']).replace(',', '.'))
+                q_abs = abs(q_new)
+                row_new['q'] = int(round(q_abs)) if q_field.is_integer() else q_abs
+            except Exception:
+                pass
+        return row_new
+
+    def _normalize_daytrade_split(self, tol:float=1e-9):
+        """Apply B3 matching rule: day trade first, swing for the remainder.
+
+        For each (cpf, conta, symbol, data):
+            day_trade_qty = min(total_buy_qty, total_sell_qty)
+            swing_qty = remaining quantity on each side
+
+        Rows are split proportionally when needed so costs/values are preserved.
+        """
+        if self._operacoes is None or self._operacoes.empty:
+            return
+
+        cols = self._operacoes.columns.to_list()
+        oper = self._operacoes.copy()
+        oper.reset_index(inplace=True, drop=True)
+        oper['_order'] = np.arange(len(oper), dtype=float)
+        oper['_cpf'] = oper['nota_id'].apply(lambda x: self._notas.at[x, 'cpf'] if x in self._notas.index else '')
+        oper['_conta'] = oper['nota_id'].apply(lambda x: self._notas.at[x, 'conta'] if x in self._notas.index else '')
+
+        new_rows = []
+        grp_cols = ['_cpf', '_conta', 'symbol', 'data']
+        for _, grp in oper.groupby(grp_cols, sort=False, dropna=False):
+            grp = grp.sort_values('_order')
+            q_buy = float(grp.loc[grp['Q'] > 0, 'Q'].sum())
+            q_sell = float(-grp.loc[grp['Q'] < 0, 'Q'].sum())
+            q_dt = min(q_buy, q_sell)
+            buy_dt_left = q_dt
+            sell_dt_left = q_dt
+
+            for _, row in grp.iterrows():
+                q = float(row['Q'])
+                if abs(q) <= tol:
+                    row0 = row.copy()
+                    row0['dt'] = False
+                    row0['_order_norm'] = row['_order']
+                    new_rows.append(row0)
+                    continue
+
+                q_abs = abs(q)
+                sgn = 1 if q > 0 else -1
+                if q > 0:
+                    q_dt_abs = min(q_abs, buy_dt_left)
+                    buy_dt_left -= q_dt_abs
+                else:
+                    q_dt_abs = min(q_abs, sell_dt_left)
+                    sell_dt_left -= q_dt_abs
+                q_sw_abs = q_abs - q_dt_abs
+
+                if q_dt_abs > tol:
+                    row_dt = self._split_operacao_row(row, sgn * q_dt_abs, True)
+                    row_dt['_order_norm'] = row['_order']
+                    new_rows.append(row_dt)
+                if q_sw_abs > tol:
+                    row_sw = self._split_operacao_row(row, sgn * q_sw_abs, False)
+                    row_sw['_order_norm'] = row['_order'] + 1e-6
+                    new_rows.append(row_sw)
+
+        oper_norm = pd.DataFrame(new_rows)
+        oper_norm.sort_values('_order_norm', kind='stable', inplace=True)
+        oper_norm.drop(columns=['_order_norm', '_order', '_cpf', '_conta'], errors='ignore', inplace=True)
+        for col in cols:
+            if col not in oper_norm.columns:
+                oper_norm[col] = np.nan
+        self._operacoes = oper_norm[cols].reset_index(drop=True)
+
     def calc_notas(self, cpfs:(str,list)=None, from_date:(str, datetime)=None):
         def get_sum(cols):
             return sum([nota[c] if not np.isnan(nota[c]) else 0 for c in cols])
+        self._normalize_daytrade_split()
         cpfs = toList(cpfs) if cpfs else [self.cpf] if self.cpf else self.get_cpfs()
         from_date = pd.to_datetime(from_date) if from_date else min(self._notas['data'])
         print('calculando:', end=' ')
@@ -555,9 +761,14 @@ class notas_b3(object):
                 for if_dayt in [True, False]:
 
                     oper = self.get_oper_tit(symbol, if_dayt, operacoes)
-                    Q_ant = qant.sum().at[symbol, 'Q'] if symbol in qant.indices else 0
-                    P_ant = qant.last().at[symbol, 'P'] if symbol in qant.indices else 0
-                    oper['Q_acum'] = oper['Q'].cumsum() + Q_ant
+                    if if_dayt:
+                        Q_ant = 0
+                        P_ant = 0
+                        oper['Q_acum'] = oper.groupby('data')['Q'].cumsum()
+                    else:
+                        Q_ant = qant.sum().at[symbol, 'Q'] if symbol in qant.indices else 0
+                        P_ant = qant.last().at[symbol, 'P'] if symbol in qant.indices else 0
+                        oper['Q_acum'] = oper['Q'].cumsum() + Q_ant
                     oper['v_oper'] = oper['valor']+oper['custo']
                     oper['if_add_q'] = oper.apply(lambda r: r['Q']*(r['Q_acum']-r['Q'])>=0, axis=1)
                     oper['p_medio'] = oper.apply(lambda r: r['v_oper']/r['Q'], axis=1)
@@ -575,21 +786,36 @@ class notas_b3(object):
                                 oper.loc[oper_q1.index,'Q_acum']+=Q_add
 
                     # calc preço medio
-                    p_medio_prev = P_ant
                     oper['pnl'] = 0
-                    for i, if_add_q, Q, Q_acum, v_oper in zip(
-                            oper.index, oper['if_add_q'], oper['Q'], oper['Q_acum'], oper['v_oper']):
-                        if if_add_q:
-                            p_medio = (v_oper+p_medio_prev*(Q_acum-Q))/Q_acum
-                            pnl = 0
-                        else:
-                            p_medio = p_medio_prev
-                            Q_pnl = min(-Q, Q_acum-Q) if Q<0 else max(-Q, Q_acum-Q)
-                            pnl = Q_pnl*(v_oper/Q) - Q_pnl*p_medio
-                        p_medio_prev= p_medio
-                        q_acum_prev = Q_acum
-                        oper.at[i, 'p_medio'] = p_medio
-                        oper.at[i, 'pnl'] = pnl
+                    if if_dayt:
+                        for _, oper_day in oper.groupby('data', sort=False):
+                            p_medio_prev = 0
+                            for i, if_add_q, Q, Q_acum, v_oper in zip(
+                                    oper_day.index, oper_day['if_add_q'], oper_day['Q'], oper_day['Q_acum'], oper_day['v_oper']):
+                                if if_add_q:
+                                    p_medio = (v_oper+p_medio_prev*(Q_acum-Q))/Q_acum
+                                    pnl = 0
+                                else:
+                                    p_medio = p_medio_prev
+                                    Q_pnl = min(-Q, Q_acum-Q) if Q<0 else max(-Q, Q_acum-Q)
+                                    pnl = Q_pnl*(v_oper/Q) - Q_pnl*p_medio
+                                p_medio_prev= p_medio
+                                oper.at[i, 'p_medio'] = p_medio
+                                oper.at[i, 'pnl'] = pnl
+                    else:
+                        p_medio_prev = P_ant
+                        for i, if_add_q, Q, Q_acum, v_oper in zip(
+                                oper.index, oper['if_add_q'], oper['Q'], oper['Q_acum'], oper['v_oper']):
+                            if if_add_q:
+                                p_medio = (v_oper+p_medio_prev*(Q_acum-Q))/Q_acum
+                                pnl = 0
+                            else:
+                                p_medio = p_medio_prev
+                                Q_pnl = min(-Q, Q_acum-Q) if Q<0 else max(-Q, Q_acum-Q)
+                                pnl = Q_pnl*(v_oper/Q) - Q_pnl*p_medio
+                            p_medio_prev= p_medio
+                            oper.at[i, 'p_medio'] = p_medio
+                            oper.at[i, 'pnl'] = pnl
                     self._operacoes.loc[oper.index, ['Q_acum','pnl','p_medio']] = oper[['Q_acum','pnl','p_medio']]
 
     def get_monthly_results(self):
