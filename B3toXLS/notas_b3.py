@@ -152,7 +152,7 @@ class notas_b3(object):
         data = {k:data[k] if k in data else columns_info[k]['default'] for k in columns_info}
         data['data']=self._notas.at[nota_id,'data']
         data['nota_id']=nota_id
-        data['Q'] = abs(data['Q']) * (1 if data['c/v']=='C' else -1)
+        data['Q'] = abs(data['Q']) * (1 if data['c/v'].lower()=='c' else -1)
         data['valor']=data['P']*data['Q']
         if idx is None:
             self._operacoes = self._operacoes.append(data, ignore_index=True)
@@ -496,6 +496,7 @@ class notas_b3(object):
 
     def set_convert_tit(self, titulo:str, date:str, new_tit:str,fator:float):
         '''
+        Converte ou Desdobramento ou Agrupamento
 
         Args:
             titulo: título a ser convertido
@@ -818,10 +819,26 @@ class notas_b3(object):
                             oper.at[i, 'pnl'] = pnl
                     self._operacoes.loc[oper.index, ['Q_acum','pnl','p_medio']] = oper[['Q_acum','pnl','p_medio']]
 
+    def _get_oper_asset_type(self, row:pd.Series):
+        tipo_mercado = str(row.get('tipo_mercado', '')).strip().upper()
+        if tipo_mercado in {'OPCAO DE COMPRA', 'OPCAO DE VENDA', 'EXERC OPC COMPRA', 'EXERC OPC VENDA'}:
+            return 'opcao'
+        if tipo_mercado in {'VISTA', 'FRACIONARIO'}:
+            return 'acao'
+
+        nota_id = row.get('nota_id')
+        if nota_id in self._notas.index:
+            try:
+                return 'opcao' if bool(self._notas.at[nota_id, 'opção']) else 'acao'
+            except Exception:
+                pass
+        return 'acao'
+
     def get_monthly_results(self):
         #%%
-        oper = self.oper
+        oper = self.oper.copy()
         notas = self.notas
+        oper['asset_type'] = oper.apply(self._get_oper_asset_type, axis=1)
         pacum = self._pacum.loc[self.cpf]
         dt_start = pacum['date'].date()
         dt_end = oper['data'].max()
@@ -844,19 +861,32 @@ class notas_b3(object):
             dt_start_m = datetime(year, month, 1).date()
             operm = oper[(oper['data'] >= dt_start_m) & (oper['data'] <= dt_end_m)]
             notasm = notas[(notas['data'] >= dt_start_m) & (notas['data'] <= dt_end_m)]
+            operm_normal = operm[operm['dt'] == False]
+            operm_daytrade = operm[operm['dt'] == True]
+
             df.loc[dt_end_m, idx['normal', 'ir_pago']] = notasm['ir_oper'].sum()
             ir_norm_acum += df.loc[dt_end_m, idx['normal', 'ir_pago']]
             df.loc[dt_end_m, idx['daytrade', 'ir_pago']] = notasm['ir_dt'].sum()
             ir_dayt_acum += df.loc[dt_end_m, idx['daytrade', 'ir_pago']]
+
+            res_norm_acoes = operm_normal[operm_normal['asset_type'] == 'acao']['pnl'].sum()
+            res_norm_opcoes = operm_normal[operm_normal['asset_type'] == 'opcao']['pnl'].sum()
+            res_dayt_acoes = operm_daytrade[operm_daytrade['asset_type'] == 'acao']['pnl'].sum()
+            res_dayt_opcoes = operm_daytrade[operm_daytrade['asset_type'] == 'opcao']['pnl'].sum()
+
             if notasm['vendas_a_vista'].abs().sum()< MIN_VALOR_ISENTO:
-                res_isento = operm.query('dt==False')[(
-                    operm['nota_id'].isin(notasm.query('opção==False').index))]['pnl'].sum()
+                res_isento = operm_normal[(
+                    operm_normal['nota_id'].isin(notasm.query('opção==False').index))]['pnl'].sum()
                 if res_isento:
                     df.loc[dt_end_m, idx['normal', 'isento']] = res_isento
             else:
                 res_isento = 0
-            res_norm = operm.query('dt==False')['pnl'].sum()-res_isento
-            res_dayt = operm.query('dt')['pnl'].sum()
+            res_norm = res_norm_acoes + res_norm_opcoes - res_isento
+            res_dayt = res_dayt_acoes + res_dayt_opcoes
+            df.loc[dt_end_m, idx['normal', 'resultado_acoes']] = res_norm_acoes
+            df.loc[dt_end_m, idx['normal', 'resultado_opcoes']] = res_norm_opcoes
+            df.loc[dt_end_m, idx['daytrade', 'resultado_acoes']] = res_dayt_acoes
+            df.loc[dt_end_m, idx['daytrade', 'resultado_opcoes']] = res_dayt_opcoes
             df.loc[dt_end_m, idx['normal', 'resultado']] = res_norm
             df.loc[dt_end_m, idx['normal', 'res_trib']] = max(0,res_norm-res_isento+pacum_norm)
             df.loc[dt_end_m, idx['daytrade', 'resultado']] = res_dayt
@@ -1069,8 +1099,6 @@ class notas_b3(object):
     def get_contas(self):
         return list(set(self.notas['conta'].drop_duplicates()).union(self.qant['conta'].drop_duplicates()))
 
-
-
     def save_carteira_to_rtd(self):
         file = f'{cfg.PATH_TO_RTD_XLS}/carteira_{self.cpf}.xlsx'
         cart = self.carteira()
@@ -1094,7 +1122,7 @@ class notas_b3(object):
         # df.to_excel(file)
         print(f'file saved at: {file}')
 
-    def compare_carteira_with_real(self, path_to_posicao):
+    def compare_carteira_with_real(self, path_to_posicao,as_of=None):
         '''
         compara posicao real com carteira no bco de dados
         Args:
@@ -1107,7 +1135,7 @@ class notas_b3(object):
 
         posicao.columns = posicao.columns.astype(str)
         dif = posicao.copy()
-        cart = self.carteira()
+        cart = self.carteira(as_of=as_of)
         for col in dif.columns:
             if col in cart.columns:
                 i = dif.index.intersection(cart.index)
