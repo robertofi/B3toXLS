@@ -8,6 +8,7 @@ import pandas as pd
 import os
 import B3toXLS.cfg as cfg
 import json
+import re
 from openpyxl import load_workbook
 from .extract_b3_data import get_company_info
 # todo: incluir nota de ajuste para o caso de eventos, caso contrário se não há operações com aquele papel não reflete na carteira (ex. FLRY3, GGBR4)
@@ -648,12 +649,20 @@ class notas_b3(object):
                 pass
         return row_new
 
+    def _is_option_exercise_oper(self, row:pd.Series) -> bool:
+        """Exercise of options follows specific tax rules, not automatic day-trade matching."""
+        tipo_mercado = str(row.get('tipo_mercado', '')).strip().upper()
+        return tipo_mercado.startswith('EXERC OPC')
+
     def _normalize_daytrade_split(self, tol:float=1e-9):
         """Apply B3 matching rule: day trade first, swing for the remainder.
 
         For each (cpf, conta, symbol, data):
             day_trade_qty = min(total_buy_qty, total_sell_qty)
             swing_qty = remaining quantity on each side
+
+        Exercise-of-option rows are excluded from automatic day-trade matching
+        because they are taxed under the exercise rules for options.
 
         Rows are split proportionally when needed so costs/values are preserved.
         """
@@ -666,20 +675,22 @@ class notas_b3(object):
         oper['_order'] = np.arange(len(oper), dtype=float)
         oper['_cpf'] = oper['nota_id'].apply(lambda x: self._notas.at[x, 'cpf'] if x in self._notas.index else '')
         oper['_conta'] = oper['nota_id'].apply(lambda x: self._notas.at[x, 'conta'] if x in self._notas.index else '')
+        oper['_exclude_dt_match'] = oper.apply(self._is_option_exercise_oper, axis=1)
 
         new_rows = []
         grp_cols = ['_cpf', '_conta', 'symbol', 'data']
         for _, grp in oper.groupby(grp_cols, sort=False, dropna=False):
             grp = grp.sort_values('_order')
-            q_buy = float(grp.loc[grp['Q'] > 0, 'Q'].sum())
-            q_sell = float(-grp.loc[grp['Q'] < 0, 'Q'].sum())
+            matchable = grp[~grp['_exclude_dt_match']]
+            q_buy = float(matchable.loc[matchable['Q'] > 0, 'Q'].sum())
+            q_sell = float(-matchable.loc[matchable['Q'] < 0, 'Q'].sum())
             q_dt = min(q_buy, q_sell)
             buy_dt_left = q_dt
             sell_dt_left = q_dt
 
             for _, row in grp.iterrows():
                 q = float(row['Q'])
-                if abs(q) <= tol:
+                if bool(row['_exclude_dt_match']) or abs(q) <= tol:
                     row0 = row.copy()
                     row0['dt'] = False
                     row0['_order_norm'] = row['_order']
@@ -707,7 +718,7 @@ class notas_b3(object):
 
         oper_norm = pd.DataFrame(new_rows)
         oper_norm.sort_values('_order_norm', kind='stable', inplace=True)
-        oper_norm.drop(columns=['_order_norm', '_order', '_cpf', '_conta'], errors='ignore', inplace=True)
+        oper_norm.drop(columns=['_order_norm', '_order', '_cpf', '_conta', '_exclude_dt_match'], errors='ignore', inplace=True)
         for col in cols:
             if col not in oper_norm.columns:
                 oper_norm[col] = np.nan
@@ -1334,6 +1345,180 @@ def parse_nota_b3_v1(file,page):
             return dict(success=False, error=e)
 
 
+def _normalize_pdf_cell(value):
+    return '' if value is None else ' '.join(str(value).split())
+
+
+def _looks_like_oper_row(row) -> bool:
+    row = [_normalize_pdf_cell(value) for value in row]
+    return (
+        len(row) >= 10
+        and any('BOVESPA' in value for value in row[:3])
+        and any(value in ['C', 'V'] for value in row[:4])
+    )
+
+
+def _normalize_oper_row(row, cols):
+    row = [_normalize_pdf_cell(value) for value in row]
+    if len(row) < len(cols) and row and row[0] == '1-BOVESPA':
+        row = [''] + row
+    if len(row) == len(cols) + 1 and row[6] == '' and _looks_like_number(row[7]):
+        row = row[:6] + row[7:]
+    if len(row) == len(cols) + 1 and row[6] == '':
+        row = row[:6] + row[7:]
+    if (
+        len(row) == len(cols)
+        and not _looks_like_number(row[7])
+        and _looks_like_number(row[8])
+        and _looks_like_number(row[9])
+        and _looks_like_number(row[10])
+    ):
+        dc = 'D' if row[2] == 'C' else 'C'
+        row = row[:6] + [row[7], row[8], row[9], row[10], dc]
+    if len(row) == len(cols) and row[6] not in ['', '#'] and not _looks_like_obs(row[6]) and _looks_like_number(row[7]):
+        row = row[:6] + [''] + row[6:len(cols) - 1]
+    row = row[:len(cols)] + [''] * max(0, len(cols) - len(row))
+    return row
+
+
+def _extract_oper_table_v2(page, cols):
+    settings = {'intersection_tolerance':20,"vertical_strategy":"lines","horizontal_strategy":"text",
+                "snap_y_tolerance":5,'text_x_tolerance':30}
+    oper = page.within_bbox((0,243,595,446)).extract_table(settings)
+    if oper:
+        return [_normalize_oper_row(row, cols) for row in oper if _looks_like_oper_row(row)]
+
+    tables = page.extract_tables({'intersection_y_tolerance':21}) or []
+    rows = []
+    for table in tables:
+        for row in table:
+            if _looks_like_oper_row(row):
+                rows.append(_normalize_oper_row(row, cols))
+    return rows
+
+
+def _extract_oper_table_words_v2(page, cols):
+    words = page.crop((0,240,595,440)).extract_words(
+        x_tolerance=3,
+        y_tolerance=3,
+        keep_blank_chars=False,
+    )
+    main_rows = [w for w in words if w['text'] == '1-BOVESPA']
+    rows = []
+    for idx, main in enumerate(main_rows):
+        y0 = main['top']
+        next_y = main_rows[idx + 1]['top'] if idx + 1 < len(main_rows) else y0 + 20
+        band_top = y0 - 7
+        band_bottom = next_y - 7
+        row_words = [w for w in words if band_top <= w['top'] < band_bottom]
+
+        cv = _word_text(row_words, 80, 100, y0 - 2, y0 + 2)
+        qty = _word_text(row_words, 350, 410, y0 - 2, y0 + 2)
+        price = _word_text(row_words, 410, 475, y0 - 2, y0 + 2)
+        value = _word_text(row_words, 470, 540, y0 - 2, y0 + 2)
+        dc = _word_text(row_words, 540, 570, y0 - 2, y0 + 2)
+        if cv not in ['C', 'V'] or dc not in ['C', 'D'] or not qty or not price or not value:
+            continue
+
+        prazo = ''
+        titulo_parts = []
+        for word in sorted(row_words, key=lambda w: (round(w['top'], 1), w['x0'])):
+            x = word['x0']
+            text = word['text']
+            if x < 160 or x >= 325 or _looks_like_obs(text):
+                continue
+            prazo_match = re.match(r'^(\d{2}/\d{2})(.*)$', text)
+            if prazo_match and not prazo:
+                prazo = prazo_match.group(1)
+                suffix = prazo_match.group(2)
+                if suffix:
+                    titulo_parts.append(suffix)
+            elif text != prazo:
+                titulo_parts.append(text)
+
+        market_parts = [
+            w['text'] for w in sorted(row_words, key=lambda w: (round(w['top'], 1), w['x0']))
+            if 100 <= w['x0'] < 165 and w['text'] in ['OPCAO', 'DE', 'COMPRA', 'VENDA']
+        ]
+        tipo_mercado = ' '.join(market_parts)
+        if tipo_mercado.startswith('OPCAO DE COMPRA'):
+            tipo_mercado = 'OPCAO DE COMPRA'
+        elif tipo_mercado.startswith('OPCAO DE VENDA'):
+            tipo_mercado = 'OPCAO DE VENDA'
+
+        obs = _word_text(row_words, 325, 360, y0 - 2, y0 + 2)
+        rows.append([
+            '',
+            '1-BOVESPA',
+            cv,
+            tipo_mercado,
+            prazo,
+            ' '.join(titulo_parts),
+            obs,
+            qty,
+            price,
+            value,
+            dc,
+        ])
+    return [_normalize_oper_row(row, cols) for row in rows]
+
+
+def _word_text(words, x0, x1, y0, y1):
+    values = [
+        w['text'] for w in sorted(words, key=lambda w: w['x0'])
+        if x0 <= w['x0'] < x1 and y0 <= w['top'] <= y1
+    ]
+    return ' '.join(values)
+
+
+def _looks_like_number(value):
+    return bool(re.match(r'^[\d.]+,\d+$|^\d+$', str(value)))
+
+
+def _looks_like_obs(value):
+    return str(value) in {'#', '@', '@#', 'D', 'D#'}
+
+
+def _oper_rows_total(rows):
+    values = []
+    for row in rows:
+        try:
+            values.append(pd.to_numeric(str(row[9]).replace('.','').replace(',','.')))
+        except Exception:
+            pass
+    return sum(values) if values else None
+
+
+def _oper_rows_signed_total(rows):
+    values = []
+    for row in rows:
+        try:
+            value = pd.to_numeric(str(row[9]).replace('.','').replace(',','.'))
+            values.append(value if row[2] == 'C' else -value)
+        except Exception:
+            pass
+    return sum(values) if values else None
+
+
+def _oper_total_from_text(text):
+    if not text:
+        return None
+    pos0 = text.find('Quantidade Preço / Ajuste Valor Operação / Ajuste D/C')
+    pos1 = text.find('Resumo dos Negócios Resumo Financeiro')
+    if pos0 < 0 or pos1 <= pos0:
+        return None
+    oper_t = text[pos0:pos1].split('\n')[1:-1]
+    values = []
+    for t in oper_t:
+        parts = t.split(' ')
+        if len(parts) >= 2:
+            try:
+                values.append(pd.to_numeric(parts[-2].replace('.','').replace(',','.')))
+            except Exception:
+                pass
+    return sum(values) if values else None
+
+
 def parse_nota_b3_v2(file,page):
     text = page.extract_text()
     # print(text)
@@ -1354,26 +1539,34 @@ def parse_nota_b3_v2(file,page):
             nota.at[nota_id,col] = parse_str(text, col, NOTAS_MAP)
 
         # find total value
-        pos0 = text.find('Quantidade Preço / Ajuste Valor Operação / Ajuste D/C')
-        pos1 = text.find('Resumo dos Negócios Resumo Financeiro')
-        oper_t = text[pos0:pos1].split('\n')[1:-1]
-        valor_total_ver = sum(
-            [pd.to_numeric(t.split(' ')[-2].replace('.','').replace(',','.')) for t in oper_t])
-
-        oper = page.within_bbox((0,243,595,446)).extract_table(
-            {'intersection_tolerance':20,"vertical_strategy":"lines","horizontal_strategy":"text",
-                "snap_y_tolerance":5,'text_x_tolerance':30})
         cols = ['q','negociacao','c/v','tipo_mercado','prazo','titulo','obs',
                                      'Q','P','valor','d/c']
-        for i,row in enumerate(oper):
-            if len(row)<len(cols) and row[0]=='1-BOVESPA':
-                oper[i] = ['']+row
+        valor_total_ver = _oper_total_from_text(text)
+        oper = _extract_oper_table_v2(page, cols)
+        oper_words = _extract_oper_table_words_v2(page, cols)
+        if oper_words:
+            valor_total = _oper_rows_total(oper)
+            valor_total_words = _oper_rows_total(oper_words)
+            signed_total = _oper_rows_signed_total(oper)
+            signed_total_words = _oper_rows_signed_total(oper_words)
+            expected_signed_total = -nota.at[nota_id, 'liq_operacoes']
+            use_words = not oper
+            if signed_total is not None and signed_total_words is not None:
+                use_words = abs(signed_total_words - expected_signed_total) < abs(signed_total - expected_signed_total)
+            elif valor_total_ver is not None and valor_total_words is not None:
+                use_words = abs(valor_total_words - valor_total_ver) < abs((valor_total or 0) - valor_total_ver)
+            elif len(oper_words) > len(oper):
+                use_words = True
+            if use_words:
+                oper = oper_words
+        if not oper:
+            raise ValueError('Could not extract operation table')
 
         oper = pd.DataFrame(oper,columns=cols)
         valor_total = pd.to_numeric(oper.valor.str.replace('.','').str.replace(',','.')).sum()
 
         oper['nota_id'] = nota_id
-        if round(valor_total_ver,2)!=round(valor_total,2):
+        if valor_total_ver is not None and round(valor_total_ver,2)!=round(valor_total,2):
             print('Error in sum')
 
         return dict(success=True, oper=oper, nota=nota)
